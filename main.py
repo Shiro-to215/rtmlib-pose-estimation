@@ -5,9 +5,25 @@ import cv2
 from rtmlib import Body, draw_skeleton
 
 
-INPUT_VIDEO = Path("2.7K240fps-ex.MP4")
-OUTPUT_VIDEO = Path("output_pose.mp4")
-OUTPUT_JSON = Path("output_pose.json")
+# ここを書き換えて、動画を探す階層とファイル名を指定してください。
+INPUT_ROOT = (
+    Path.home()
+    / "解析用動画ファイル"
+    / "9-18-SMZ"
+    / "空中左-SONY"
+)
+INPUT_VIDEO_NAME = "C0036.MP4"   # 解析ファイル名を正しく入力
+
+# ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
+OUTPUT_ROOT = (
+    Path.home()
+    / "動画解析出力"
+    / "9-18-SMZ"
+    / "空中左-SONY"
+)
+OUTPUT_FOLDER_NAME = "空中左-4"
+OUTPUT_VIDEO_NAME = "空中左-4.mp4"
+OUTPUT_JSON_NAME = "空中左-4.json"
 
 COCO_KEYPOINTS = [
     "鼻", "左目", "右目", "左耳", "右耳",
@@ -21,17 +37,35 @@ MODEL_MODE = "balanced"
 KEYPOINT_THRESHOLD = 0.45
 
 
-def main() -> None:
-    if not INPUT_VIDEO.is_file():
+def find_input_video() -> Path:
+    matches = sorted(
+        path
+        for path in INPUT_ROOT.rglob(INPUT_VIDEO_NAME)
+        if path.is_file()
+    )
+    if not matches:
         raise FileNotFoundError(
-            f"Input video was not found: {INPUT_VIDEO.resolve()}"
+            f"Input video was not found under {INPUT_ROOT.resolve()}: "
+            f"{INPUT_VIDEO_NAME}"
         )
+    if len(matches) > 1:
+        print(
+            f"Multiple input videos found. Using: {matches[0].resolve()}",
+            flush=True,
+        )
+    return matches[0]
 
-    OUTPUT_VIDEO.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    capture = cv2.VideoCapture(str(INPUT_VIDEO))
+
+def main() -> None:
+    input_video = find_input_video()
+    output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
+    output_video = output_directory / OUTPUT_VIDEO_NAME
+    output_json = output_directory / OUTPUT_JSON_NAME
+
+    output_directory.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
-        raise RuntimeError(f"Could not open input video: {INPUT_VIDEO.resolve()}")
+        raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
 
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -40,14 +74,14 @@ def main() -> None:
         fps = 30.0
 
     writer = cv2.VideoWriter(
-        str(OUTPUT_VIDEO),
+        str(output_video),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (width, height),
     )
     if not writer.isOpened():
         capture.release()
-        raise RuntimeError(f"Could not create output video: {OUTPUT_VIDEO.resolve()}")
+        raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
 
     body = Body(
         mode=MODEL_MODE,
@@ -56,10 +90,10 @@ def main() -> None:
     )
 
     frame_count = 0
-    with OUTPUT_JSON.open("w", encoding="utf-8") as json_file:
+    with output_json.open("w", encoding="utf-8") as json_file:
         json_file.write("{\n")
         json_file.write('"input_video": ')
-        json.dump(str(INPUT_VIDEO.resolve()), json_file, ensure_ascii=False)
+        json.dump(str(input_video.resolve()), json_file, ensure_ascii=False)
         json_file.write(f',\n"width": {width},\n"height": {height},\n"fps": {fps}')
         json_file.write(',\n"frames": [\n')
 
@@ -107,8 +141,8 @@ def main() -> None:
             writer.release()
 
     print(f"Finished: {frame_count} frames")
-    print(f"Output: {OUTPUT_VIDEO.resolve()}")
-    print(f"JSON: {OUTPUT_JSON.resolve()}")
+    print(f"Output: {output_video.resolve()}")
+    print(f"JSON: {output_json.resolve()}")
 
 
 if __name__ == "__main__":
