@@ -14,6 +14,8 @@ OUTPUT_ROOT = Path(".")
 OUTPUT_FOLDER_NAME = "pose_output"
 OUTPUT_VIDEO_NAME = "output_pose.mp4"
 OUTPUT_JSON_NAME = "output_pose.json"
+OUTPUT_CSV_NAME = "output_pose.csv"
+CSV_MAX_PERSONS = 10
 ```
 
 - `INPUT_ROOT`: 動画を探し始める階層です。配下のフォルダも自動で探索します。
@@ -22,6 +24,8 @@ OUTPUT_JSON_NAME = "output_pose.json"
 - `OUTPUT_FOLDER_NAME`: 自動作成する新規フォルダ名です。
 - `OUTPUT_VIDEO_NAME`: 骨格動画のファイル名です。
 - `OUTPUT_JSON_NAME`: 座標 JSON のファイル名です。
+- `OUTPUT_CSV_NAME`: 座標 CSV のファイル名です。Excelやスプレッドシートで開けます。
+- `CSV_MAX_PERSONS`: CSVに用意する人物列の最大数です。必要な人数に合わせて変更してください。
 
 推定モデルを設定する
 [performance, balanced, lightweight]
@@ -30,6 +34,8 @@ OUTPUT_JSON_NAME = "output_pose.json"
 
 `python3 main.py`
 
-動画は `INPUT_ROOT` の配下を `pathlib` で階層探索します。同じ名前の動画が複数ある場合は、見つかった順に並べて最初の1つを処理します。出力先には `OUTPUT_ROOT / OUTPUT_FOLDER_NAME` を新規作成し、その中に動画と JSON を保存します。
+動画は `INPUT_ROOT` の配下を `pathlib` で階層探索します。同じ名前の動画が複数ある場合は、見つかった順に並べて最初の1つを処理します。出力先には `OUTPUT_ROOT / OUTPUT_FOLDER_NAME` を新規作成し、その中に動画、JSON、CSVを保存します。
+
+CSVは1行に1フレームを記録します。同じフレームに複数人いる場合は、`person_0_id`、`person_1_id`のように人物ごとの列へ横並びで保存します。各人物について17部位ごとの`x`、`y`、`score`が入ります。人物を検出できなかった列は空欄になります。
 
 JSON はフレームごとに `persons` を持ち、各人物の17部位（鼻、左目、右目、左耳、右耳、左肩、右肩、左肘、右肘、左手首、右手首、左股関節、右股関節、左膝、右膝、左足首、右足首）を記録します。各部位には `x`、`y`、`score` が入ります。
