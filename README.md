@@ -23,6 +23,9 @@ OUTPUT_JSON_NAME = "output_pose.json"
 - `OUTPUT_VIDEO_NAME`: 骨格動画のファイル名です。
 - `OUTPUT_JSON_NAME`: 座標 JSON のファイル名です。
 
+推定モデルを設定する
+[performance, balanced, lightweight]
+
 設定後、[コードをセーブしてから]以下をターミナルで実行します。
 
 `python3 main.py`

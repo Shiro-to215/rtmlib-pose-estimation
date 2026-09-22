@@ -10,20 +10,20 @@ INPUT_ROOT = (
     Path.home()
     / "解析用動画ファイル"
     / "9-18-SMZ"
-    / "助走-GoPro"
+    / "空中左-SONY"
 )
-INPUT_VIDEO_NAME = "GX010069.MP4"   # 解析ファイル名を正しく入力
+INPUT_VIDEO_NAME = "C0033.MP4"   # 解析ファイル名を正しく入力
 
 # ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
 OUTPUT_ROOT = (
     Path.home()
     / "動画解析出力"
     / "9-18-SMZ"
-    / "助走-GoPro"
+    / "空中左-SONY"
 )
-OUTPUT_FOLDER_NAME = "助走-7"
-OUTPUT_VIDEO_NAME = "助走-7.mp4"
-OUTPUT_JSON_NAME = "助走-7.json"
+OUTPUT_FOLDER_NAME = "空中左-pre"
+OUTPUT_VIDEO_NAME = "空中左-pre.mp4"
+OUTPUT_JSON_NAME = "空中左-pre.json"
 
 COCO_KEYPOINTS = [
     "鼻", "左目", "右目", "左耳", "右耳",
@@ -33,7 +33,8 @@ COCO_KEYPOINTS = [
 
 BACKEND = "onnxruntime"
 DEVICE = "cpu"
-MODEL_MODE = "balanced"
+#推定モデルを設定[performance , balanced , lightweight]
+MODEL_MODE = "performance"
 KEYPOINT_THRESHOLD = 0.45
 
 
