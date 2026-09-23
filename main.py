@@ -1,10 +1,10 @@
 from pathlib import Path
 import csv
-import json
 import math
 
 import cv2
 from rtmlib import Body, draw_skeleton
+from ultralytics import YOLO
 
 
 # ここを書き換えて、動画を探す階層とファイル名を指定してください。
@@ -12,21 +12,40 @@ INPUT_ROOT = (
     Path.home()
     / "解析用動画ファイル"
     / "9-18-SMZ"
-    / "踏切右-GoPro"
+    / "助走-GoPro"
 )
-INPUT_VIDEO_NAME = "GX010047.MP4"   # 解析ファイル名を正しく入力
+INPUT_VIDEO_NAME = "GX010063.MP4"   # 解析ファイル名を正しく入力
 
 # ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
 OUTPUT_ROOT = (
     Path.home()
     / "動画解析出力"
-    / "9-18-SMZ-分析用①"
-    / "踏切右-GoPro"
+    / "9-18-SMZ"
+    / "助走-GoPro"
 )
-OUTPUT_FOLDER_NAME = "踏切右"
-OUTPUT_VIDEO_NAME = "踏切右.mp4"
-OUTPUT_JSON_NAME = "踏切右.json"
-OUTPUT_CSV_NAME = "踏切右.csv"
+OUTPUT_FOLDER_NAME = "助走-1"
+OUTPUT_VIDEO_NAME = "助走-1.mp4"
+OUTPUT_YOLO_VIDEO_NAME = "助走_yolo-1.mp4"  # 実験用: YOLO検出・追跡結果
+OUTPUT_CSV_NAME = "助走-1.csv"
+
+# YOLO/ByteTrack設定。YOLO_MODELは初回実行時に自動ダウンロードされます。
+# 高速なnではなく、精度優先のmを使用します。
+YOLO_MODEL = "yolo11m.pt"
+YOLO_TRACKER = "bytetrack.yaml"
+YOLO_IMAGE_SIZE = 1280
+YOLO_CONFIDENCE = 0.20
+YOLO_IOU = 0.50
+YOLO_CLASSES = [0]  # COCOのperson
+
+# 対象選択。指定した場合だけ、そのYOLO追跡IDを対象にします。
+# Noneの場合は、動画全体の移動量から対象IDを自動選択します。
+YOLO_TRACK_ID = None
+
+
+# 対象人物のクロップ設定。0.10は上下左右に10%相当の余白を追加します。
+CROP_PADDING_RATIO = 0.10
+TARGET_REACQUIRE_MAX_DISTANCE = 300.0
+TARGET_REACQUIRE_MIN_IOU = 0.05
 
 COCO_KEYPOINTS = [
     "鼻", "左目", "右目", "左耳", "右耳",
@@ -38,16 +57,32 @@ BACKEND = "onnxruntime"
 DEVICE = "cpu"
 #推定モデルを設定[performance , balanced , lightweight]
 MODEL_MODE = "performance"
+
+#各種設定
 KEYPOINT_THRESHOLD = 0.45
 TRACK_MAX_DISTANCE = 250.0
-TRACK_MAX_MISSED_FRAMES = 30
-CSV_MAX_PERSONS = 15
+TRACK_MAX_MISSED_FRAMES = 8
+CSV_MAX_PERSONS = 3
 TRACK_MATCH_THRESHOLD = 2.0
 TRACK_CENTER_WEIGHT = 0.35
 TRACK_KEYPOINT_WEIGHT = 0.35
 TRACK_POSE_WEIGHT = 0.20
 TRACK_BBOX_WEIGHT = 0.10
-TRACK_VELOCITY_SMOOTHING = 0.7
+TRACK_VELOCITY_SMOOTHING = 0.35
+TRACK_RAW_ID_BONUS = 2.0
+TRACK_PREDICTED_BOX_WEIGHT = 0.35
+TRACK_PREDICTION_MAX_FRAMES = 2
+TARGET_TRACK_MATCH_THRESHOLD = 0.75
+TARGET_TRACK_MIN_IOU = 0.15
+TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING = True
+TARGET_LOCK_RAW_ID = True
+TARGET_SELECTION_MIN_FRAMES = 15
+TARGET_SELECTION_COVERAGE_WEIGHT = 0.5
+TARGET_BOX_FILL_MAX_FRAMES = 60
+POSE_TRACK_MAX_COST = 1.25
+POSE_TRACK_KEYPOINT_WEIGHT = 0.65
+POSE_TRACK_CENTER_WEIGHT = 0.25
+POSE_TRACK_SHAPE_WEIGHT = 0.10
 
 
 def find_input_video() -> Path:
@@ -67,6 +102,177 @@ def find_input_video() -> Path:
             flush=True,
         )
     return matches[0]
+
+
+def clamp_box(box, width: int, height: int) -> tuple[int, int, int, int]:
+    left, top, right, bottom = box
+    return (
+        max(0, int(left)),
+        max(0, int(top)),
+        min(width, int(right)),
+        min(height, int(bottom)),
+    )
+
+
+def padded_crop_box(box, width: int, height: int) -> tuple[int, int, int, int]:
+    left, top, right, bottom = box
+    box_width = right - left
+    box_height = bottom - top
+    return clamp_box(
+        (
+            left - box_width * CROP_PADDING_RATIO,
+            top - box_height * CROP_PADDING_RATIO,
+            right + box_width * CROP_PADDING_RATIO,
+            bottom + box_height * CROP_PADDING_RATIO,
+        ),
+        width,
+        height,
+    )
+
+
+def box_center(box) -> tuple[float, float]:
+    return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+
+def choose_target_yolo_box(boxes, target_track_id, previous_box):
+    candidates = []
+    for index, box in enumerate(boxes):
+        xyxy = tuple(float(value) for value in box.xyxy[0].tolist())
+        track_id = None if box.id is None else int(box.id[0].item())
+        candidates.append({"index": index, "xyxy": xyxy, "track_id": track_id})
+    if target_track_id is not None:
+        for candidate in candidates:
+            if candidate["track_id"] == target_track_id:
+                return candidate
+    if previous_box is None:
+        return None
+    previous_center = box_center(previous_box)
+    recovery_candidates = []
+    for candidate in candidates:
+        center_distance = math.dist(previous_center, box_center(candidate["xyxy"]))
+        overlap = bbox_iou(previous_box, candidate["xyxy"])
+        if (
+            center_distance <= TARGET_REACQUIRE_MAX_DISTANCE
+            or overlap >= TARGET_REACQUIRE_MIN_IOU
+        ):
+            recovery_candidates.append((overlap, -center_distance, candidate))
+    if not recovery_candidates:
+        return None
+    return max(recovery_candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def pose_match_cost(
+    keypoints,
+    scores,
+    target_center,
+    previous_keypoints,
+    previous_scores,
+) -> float:
+    geometry = get_person_geometry(keypoints, scores)
+    crop_scale = max(
+        math.hypot(
+            geometry["bbox"][2] - geometry["bbox"][0],
+            geometry["bbox"][3] - geometry["bbox"][1],
+        ),
+        1.0,
+    )
+    center_cost = math.dist(geometry["center"], target_center) / crop_scale
+    reliable_indices = [
+        index
+        for index, score in enumerate(scores)
+        if float(score) >= KEYPOINT_THRESHOLD
+        and float(previous_scores[index]) >= KEYPOINT_THRESHOLD
+    ]
+    if not reliable_indices:
+        reliable_indices = list(range(min(len(keypoints), len(previous_keypoints))))
+    keypoint_costs = []
+    shape_costs = []
+    current_center = geometry["center"]
+    previous_geometry = get_person_geometry(previous_keypoints, previous_scores)
+    for index in reliable_indices:
+        current_point = (
+            float(keypoints[index][0]),
+            float(keypoints[index][1]),
+        )
+        previous_point = (
+            float(previous_keypoints[index][0]),
+            float(previous_keypoints[index][1]),
+        )
+        keypoint_costs.append(math.dist(current_point, previous_point) / crop_scale)
+        current_relative = (
+            current_point[0] - current_center[0],
+            current_point[1] - current_center[1],
+        )
+        previous_relative = (
+            previous_point[0] - previous_geometry["center"][0],
+            previous_point[1] - previous_geometry["center"][1],
+        )
+        shape_costs.append(math.dist(current_relative, previous_relative) / crop_scale)
+    return (
+        POSE_TRACK_KEYPOINT_WEIGHT * (sum(keypoint_costs) / len(keypoint_costs))
+        + POSE_TRACK_CENTER_WEIGHT * center_cost
+        + POSE_TRACK_SHAPE_WEIGHT * (sum(shape_costs) / len(shape_costs))
+    )
+
+
+def pose_from_crop(body, frame, target_box, previous_keypoints=None, previous_scores=None):
+    height, width = frame.shape[:2]
+    crop_left, crop_top, crop_right, crop_bottom = padded_crop_box(
+        target_box, width, height
+    )
+    crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+    if crop.size == 0:
+        return None, None, None
+    keypoints, scores = body(crop)
+    if len(keypoints) == 0:
+        return None, None, (crop_left, crop_top, crop_right, crop_bottom)
+    target_center = box_center(target_box)
+    local_target_center = (
+        target_center[0] - crop_left,
+        target_center[1] - crop_top,
+    )
+    local_previous_keypoints = None
+    if previous_keypoints is not None:
+        local_previous_keypoints = [
+            (float(point[0]) - crop_left, float(point[1]) - crop_top)
+            for point in previous_keypoints
+        ]
+    if previous_keypoints is None or previous_scores is None:
+        pose_index = min(
+            range(len(keypoints)),
+            key=lambda index: math.dist(
+                get_person_geometry(keypoints[index], scores[index])["center"],
+                local_target_center,
+            ),
+        )
+    else:
+        pose_costs = [
+            pose_match_cost(
+                candidate_keypoints,
+                candidate_scores,
+                local_target_center,
+                local_previous_keypoints,
+                previous_scores,
+            )
+            for candidate_keypoints, candidate_scores in zip(keypoints, scores)
+        ]
+        pose_index = min(range(len(pose_costs)), key=pose_costs.__getitem__)
+        if pose_costs[pose_index] > POSE_TRACK_MAX_COST:
+            return None, None, (crop_left, crop_top, crop_right, crop_bottom)
+    local_keypoints = keypoints[pose_index]
+    local_scores = scores[pose_index]
+    restored_keypoints = [
+        (float(point[0]) + crop_left, float(point[1]) + crop_top)
+        for point in local_keypoints
+    ]
+    annotated_crop = draw_skeleton(
+        crop.copy(),
+        keypoints[pose_index:pose_index + 1],
+        scores[pose_index:pose_index + 1],
+        kpt_thr=KEYPOINT_THRESHOLD,
+    )
+    frame[crop_top:crop_bottom, crop_left:crop_right] = annotated_crop
+    return restored_keypoints, local_scores, (crop_left, crop_top, crop_right, crop_bottom)
 
 
 def get_person_geometry(person_keypoints, person_scores) -> dict:
@@ -248,12 +454,13 @@ def make_csv_row(frame_data: dict) -> dict:
         "frame": frame_data["frame"],
         "time_seconds": frame_data["time_seconds"],
     }
-    persons_by_id = {
-        person["person_id"]: person for person in frame_data["persons"]
-    }
     for person_index in range(CSV_MAX_PERSONS):
         prefix = f"person_{person_index}"
-        person = persons_by_id.get(person_index)
+        person = (
+            frame_data["persons"][person_index]
+            if person_index < len(frame_data["persons"])
+            else None
+        )
         row[f"{prefix}_id"] = "" if person is None else person["person_id"]
         for name in COCO_KEYPOINTS:
             keypoint = None if person is None else person[name]
@@ -263,122 +470,422 @@ def make_csv_row(frame_data: dict) -> dict:
     return row
 
 
-def main() -> None:
-    input_video = find_input_video()
-    output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
-    output_video = output_directory / OUTPUT_VIDEO_NAME
-    output_json = output_directory / OUTPUT_JSON_NAME
-    output_csv = output_directory / OUTPUT_CSV_NAME
+def predict_track_box(track: dict) -> tuple[float, float, float, float]:
+    elapsed = min(
+        track["missed_frames"] + 1,
+        TRACK_PREDICTION_MAX_FRAMES,
+    )
+    dx = track["velocity"][0] * elapsed
+    dy = track["velocity"][1] * elapsed
+    return (
+        track["bbox"][0] + dx,
+        track["bbox"][1] + dy,
+        track["bbox"][2] + dx,
+        track["bbox"][3] + dy,
+    )
 
-    output_directory.mkdir(parents=True, exist_ok=True)
+
+def yolo_box_cost(
+    track: dict,
+    box: tuple[float, float, float, float],
+    raw_track_id: int | None,
+) -> float:
+    predicted_box = predict_track_box(track)
+    elapsed = min(
+        track["missed_frames"] + 1,
+        TRACK_PREDICTION_MAX_FRAMES,
+    )
+    predicted_center = (
+        track["center"][0] + track["velocity"][0] * elapsed,
+        track["center"][1] + track["velocity"][1] * elapsed,
+    )
+    center_distance = math.dist(predicted_center, box_center(box))
+    scale = max(
+        math.hypot(
+            track["bbox"][2] - track["bbox"][0],
+            track["bbox"][3] - track["bbox"][1],
+        ),
+        1.0,
+    )
+    return (
+        center_distance / scale
+        + TRACK_PREDICTED_BOX_WEIGHT * (1.0 - bbox_iou(predicted_box, box))
+        - (TRACK_RAW_ID_BONUS if raw_track_id == track["raw_track_id"] else 0.0)
+    )
+
+
+def stabilize_yolo_ids(
+    boxes,
+    tracks: dict,
+    next_id: int,
+    protected_stable_id: int | None = None,
+):
+    detections = [
+        {
+            "bbox": tuple(float(value) for value in box.xyxy[0].tolist()),
+            "raw_track_id": None if box.id is None else int(box.id[0].item()),
+        }
+        for box in boxes
+    ]
+    for track in tracks.values():
+        track["missed_frames"] += 1
+
+    matches = []
+    for detection_index, detection in enumerate(detections):
+        for stable_id, track in tracks.items():
+            if track["missed_frames"] <= TRACK_MAX_MISSED_FRAMES + 1:
+                cost = yolo_box_cost(
+                    track,
+                    detection["bbox"],
+                    detection["raw_track_id"],
+                )
+                if stable_id == protected_stable_id:
+                    predicted_box = predict_track_box(track)
+                    if (
+                        TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING
+                        and track["missed_frames"] > 0
+                        and detection["raw_track_id"] != track["raw_track_id"]
+                    ):
+                        continue
+                    protected_match = (
+                        cost <= TARGET_TRACK_MATCH_THRESHOLD
+                        and bbox_iou(predicted_box, detection["bbox"])
+                        >= TARGET_TRACK_MIN_IOU
+                    )
+                    if not protected_match and (
+                        detection["raw_track_id"] != track["raw_track_id"]
+                    ):
+                        continue
+                if (
+                    cost <= TRACK_MATCH_THRESHOLD
+                    or detection["raw_track_id"] == track["raw_track_id"]
+                ):
+                    matches.append((cost, detection_index, stable_id))
+
+    assigned_detections = set()
+    assigned_ids = set()
+    stable_ids = [None] * len(detections)
+    for _, detection_index, stable_id in sorted(matches):
+        if detection_index in assigned_detections or stable_id in assigned_ids:
+            continue
+        stable_ids[detection_index] = stable_id
+        assigned_detections.add(detection_index)
+        assigned_ids.add(stable_id)
+
+    for detection_index, detection in enumerate(detections):
+        stable_id = stable_ids[detection_index]
+        if stable_id is None:
+            stable_id = next_id
+            next_id += 1
+        detection_box = detection["bbox"]
+        center = box_center(detection_box)
+        previous = tracks.get(stable_id)
+        velocity = (0.0, 0.0)
+        if previous is not None and previous["missed_frames"] == 1:
+            measured = (
+                center[0] - previous["center"][0],
+                center[1] - previous["center"][1],
+            )
+            velocity = (
+                TRACK_VELOCITY_SMOOTHING * previous["velocity"][0]
+                + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[0],
+                TRACK_VELOCITY_SMOOTHING * previous["velocity"][1]
+                + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[1],
+            )
+        tracks[stable_id] = {
+            "center": center,
+            "bbox": detection_box,
+            "raw_track_id": detection["raw_track_id"],
+            "velocity": velocity,
+            "missed_frames": 0,
+        }
+        stable_ids[detection_index] = stable_id
+
+    for stable_id in [
+        stable_id
+        for stable_id, track in tracks.items()
+        if track["missed_frames"] > TRACK_MAX_MISSED_FRAMES
+    ]:
+        del tracks[stable_id]
+
+    return [
+        {
+            "stable_id": stable_id,
+            "bbox": detection["bbox"],
+            "raw_track_id": detection["raw_track_id"],
+        }
+        for stable_id, detection in zip(stable_ids, detections)
+    ], next_id
+
+
+def draw_stable_yolo_tracks(frame, detections):
+    annotated = frame.copy()
+    for detection in detections:
+        left, top, right, bottom = map(int, detection["bbox"])
+        stable_id = detection["stable_id"]
+        cv2.rectangle(annotated, (left, top), (right, bottom), (0, 255, 255), 2)
+        cv2.putText(
+            annotated,
+            f"person_id: {stable_id}",
+            (left, max(25, top - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    return annotated
+
+
+def select_moving_target_id(frame_detections, total_frames):
+    trajectories = {}
+    for frame_index, detections in enumerate(frame_detections):
+        for detection in detections:
+            stable_id = detection["stable_id"]
+            trajectories.setdefault(stable_id, []).append(
+                (frame_index, box_center(detection["bbox"]))
+            )
+
+    candidates = []
+    for stable_id, observations in trajectories.items():
+        if len(observations) < TARGET_SELECTION_MIN_FRAMES:
+            continue
+        path_length = sum(
+            math.dist(previous[1], current[1])
+            for previous, current in zip(observations, observations[1:])
+        )
+        net_displacement = math.dist(observations[0][1], observations[-1][1])
+        coverage = len(observations) / max(total_frames, 1)
+        movement_score = (
+            path_length * (1.0 - TARGET_SELECTION_COVERAGE_WEIGHT)
+            + net_displacement * TARGET_SELECTION_COVERAGE_WEIGHT
+        ) * (0.5 + 0.5 * coverage)
+        candidates.append((movement_score, coverage, path_length, stable_id))
+
+    if not candidates:
+        return max(
+            trajectories,
+            key=lambda stable_id: len(trajectories[stable_id]),
+            default=None,
+        )
+    return max(candidates)[3]
+
+
+def fill_target_box_gaps(frame_detections, target_stable_id):
+    target_boxes = [
+        next(
+            (
+                detection["bbox"]
+                for detection in detections
+                if detection["stable_id"] == target_stable_id
+            ),
+            None,
+        )
+        for detections in frame_detections
+    ]
+    observed = [
+        index for index, target_box in enumerate(target_boxes)
+        if target_box is not None
+    ]
+    if not observed:
+        return target_boxes
+
+    first = observed[0]
+    last = observed[-1]
+    for index in range(max(0, first - TARGET_BOX_FILL_MAX_FRAMES), first):
+        target_boxes[index] = target_boxes[first]
+    for index in range(
+        last + 1,
+        min(len(target_boxes), last + TARGET_BOX_FILL_MAX_FRAMES + 1),
+    ):
+        target_boxes[index] = target_boxes[last]
+
+    for left_index, right_index in zip(observed, observed[1:]):
+        gap = right_index - left_index - 1
+        if gap <= 0 or gap > TARGET_BOX_FILL_MAX_FRAMES:
+            continue
+        left_box = target_boxes[left_index]
+        right_box = target_boxes[right_index]
+        for index in range(left_index + 1, right_index):
+            ratio = (index - left_index) / (right_index - left_index)
+            target_boxes[index] = tuple(
+                left_value + (right_value - left_value) * ratio
+                for left_value, right_value in zip(left_box, right_box)
+            )
+    return target_boxes
+
+
+def run_yolo_pass(input_video: Path, output_yolo_video: Path):
     capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
-
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0
-
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     writer = cv2.VideoWriter(
-        str(output_video),
+        str(output_yolo_video),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (width, height),
     )
     if not writer.isOpened():
         capture.release()
-        raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
+        raise RuntimeError(
+            f"Could not create YOLO output video: {output_yolo_video.resolve()}"
+        )
 
-    body = Body(
+    detector = YOLO(YOLO_MODEL)
+    tracks = {}
+    next_id = 0
+    target_stable_id = YOLO_TRACK_ID
+    frame_detections = []
+    try:
+        while True:
+            success, frame = capture.read()
+            if not success:
+                break
+            results = detector.track(
+                frame,
+                persist=True,
+                tracker=YOLO_TRACKER,
+                imgsz=YOLO_IMAGE_SIZE,
+                conf=YOLO_CONFIDENCE,
+                iou=YOLO_IOU,
+                classes=YOLO_CLASSES,
+                max_det=30,
+                verbose=False,
+            )
+            detections, next_id = stabilize_yolo_ids(
+                results[0].boxes,
+                tracks,
+                next_id,
+            )
+            frame_detections.append(detections)
+            writer.write(draw_stable_yolo_tracks(frame, detections))
+    finally:
+        capture.release()
+        writer.release()
+    if target_stable_id is None:
+        target_stable_id = select_moving_target_id(
+            frame_detections,
+            len(frame_detections),
+        )
+    target_boxes = fill_target_box_gaps(frame_detections, target_stable_id)
+    return frame_detections, target_boxes, target_stable_id, width, height, fps
+
+
+def main() -> None:
+    input_video = find_input_video()
+    output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
+    output_video = output_directory / OUTPUT_VIDEO_NAME
+    output_yolo_video = output_directory / OUTPUT_YOLO_VIDEO_NAME
+    output_csv = output_directory / OUTPUT_CSV_NAME
+
+    output_directory.mkdir(parents=True, exist_ok=True)
+    _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
+        input_video,
+        output_yolo_video,
+    )
+    pose_model = Body(
         mode=MODEL_MODE,
         backend=BACKEND,
         device=DEVICE,
     )
 
-    frame_count = 0
-    tracks = {}
-    next_person_id = 0
-    with (
-        output_json.open("w", encoding="utf-8") as json_file,
-        output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file,
-    ):
+    capture = cv2.VideoCapture(str(input_video))
+    writer = cv2.VideoWriter(
+        str(output_video),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not reopen input video: {input_video.resolve()}")
+    if not writer.isOpened():
+        capture.release()
+        raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
+
+    with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
         csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
         csv_writer.writeheader()
-        json_file.write("{\n")
-        json_file.write('"input_video": ')
-        json.dump(str(input_video.resolve()), json_file, ensure_ascii=False)
-        json_file.write(f',\n"width": {width},\n"height": {height},\n"fps": {fps}')
-        json_file.write(',\n"frames": [\n')
 
         try:
-            while True:
+            frame_count = 0
+            target_box_count = 0
+            pose_call_count = 0
+            pose_success_count = 0
+            previous_target_keypoints = None
+            previous_target_scores = None
+            while frame_count < len(target_boxes):
                 success, frame = capture.read()
                 if not success:
                     break
-
-                keypoints, scores = body(frame)
-                person_ids, next_person_id = assign_person_ids(
-                    keypoints,
-                    scores,
-                    tracks,
-                    next_person_id,
-                )
+                target_box = target_boxes[frame_count]
+                restored_keypoints = None
+                pose_scores = None
+                if target_box is not None:
+                    target_box_count += 1
+                    pose_call_count += 1
+                    restored_keypoints, pose_scores, crop_box = pose_from_crop(
+                        pose_model,
+                        frame,
+                        target_box,
+                        previous_target_keypoints,
+                        previous_target_scores,
+                    )
+                    if restored_keypoints is not None:
+                        pose_success_count += 1
+                        previous_target_keypoints = restored_keypoints
+                        previous_target_scores = pose_scores
                 frame_data = {
                     "frame": frame_count,
                     "time_seconds": frame_count / fps,
                     "persons": [],
                 }
-                for person_id, person_keypoints, person_scores in zip(
-                    person_ids,
-                    keypoints,
-                    scores,
-                ):
-                    person = {"person_id": person_id}
+                if restored_keypoints is not None:
+                    person = {
+                        "person_id": target_stable_id,
+                        "yolo_track_id": target_stable_id,
+                    }
                     for index, name in enumerate(COCO_KEYPOINTS):
-                        x, y = person_keypoints[index]
+                        x, y = restored_keypoints[index]
                         person[name] = {
-                            "x": float(x),
-                            "y": float(y),
-                            "score": float(person_scores[index]),
+                            "x": x,
+                            "y": y,
+                            "score": float(pose_scores[index]),
                         }
                     frame_data["persons"].append(person)
 
-                if any(
-                    person["person_id"] >= CSV_MAX_PERSONS
-                    for person in frame_data["persons"]
-                ):
-                    raise RuntimeError(
-                        "A person_id is outside the CSV range. Increase "
-                        f"CSV_MAX_PERSONS (currently {CSV_MAX_PERSONS})."
-                    )
                 csv_writer.writerow(make_csv_row(frame_data))
 
-                if frame_count > 0:
-                    json_file.write(",\n")
-                json.dump(frame_data, json_file, ensure_ascii=False)
+                if restored_keypoints is not None:
+                    label_x, label_y = map(int, target_box[:2])
+                    cv2.putText(
+                        frame,
+                        f"YOLO stable_id: {target_stable_id}",
+                        (label_x, max(25, label_y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-                frame = draw_skeleton(
-                    frame,
-                    keypoints,
-                    scores,
-                    kpt_thr=KEYPOINT_THRESHOLD,
-                )
                 writer.write(frame)
                 frame_count += 1
 
                 if frame_count % 30 == 0:
                     print(f"Processed {frame_count} frames", flush=True)
         finally:
-            json_file.write("\n]\n}\n")
             capture.release()
             writer.release()
 
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
-    print(f"JSON: {output_json.resolve()}")
+    print(f"YOLO: {output_yolo_video.resolve()}")
     print(f"CSV: {output_csv.resolve()}")
+    print(f"Target boxes: {target_box_count}/{frame_count}")
+    print(f"rtmlib calls: {pose_call_count}, accepted: {pose_success_count}")
 
 
 if __name__ == "__main__":
