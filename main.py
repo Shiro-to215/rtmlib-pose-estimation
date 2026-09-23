@@ -12,21 +12,21 @@ INPUT_ROOT = (
     Path.home()
     / "解析用動画ファイル"
     / "9-18-SMZ"
-    / "空中左-SONY"
+    / "踏切右-GoPro"
 )
-INPUT_VIDEO_NAME = "C0033.MP4"   # 解析ファイル名を正しく入力
+INPUT_VIDEO_NAME = "GX010047.MP4"   # 解析ファイル名を正しく入力
 
 # ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
 OUTPUT_ROOT = (
     Path.home()
     / "動画解析出力"
-    / "9-18-SMZ"
-    / "空中左-SONY"
+    / "9-18-SMZ-分析用①"
+    / "踏切右-GoPro"
 )
-OUTPUT_FOLDER_NAME = "空中左-pre1"
-OUTPUT_VIDEO_NAME = "空中左-pre1.mp4"
-OUTPUT_JSON_NAME = "空中左-pre1.json"
-OUTPUT_CSV_NAME = "空中左-pre1.csv"
+OUTPUT_FOLDER_NAME = "踏切右"
+OUTPUT_VIDEO_NAME = "踏切右.mp4"
+OUTPUT_JSON_NAME = "踏切右.json"
+OUTPUT_CSV_NAME = "踏切右.csv"
 
 COCO_KEYPOINTS = [
     "鼻", "左目", "右目", "左耳", "右耳",
@@ -40,8 +40,8 @@ DEVICE = "cpu"
 MODEL_MODE = "performance"
 KEYPOINT_THRESHOLD = 0.45
 TRACK_MAX_DISTANCE = 250.0
-TRACK_MAX_MISSED_FRAMES = 10
-CSV_MAX_PERSONS = 10
+TRACK_MAX_MISSED_FRAMES = 30
+CSV_MAX_PERSONS = 15
 TRACK_MATCH_THRESHOLD = 2.0
 TRACK_CENTER_WEIGHT = 0.35
 TRACK_KEYPOINT_WEIGHT = 0.35
