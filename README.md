@@ -4,10 +4,10 @@ source .venv/bin/activate　→仮想環境を有効化
 python -m pip install --upgrade pip　
 python -m pip install -r requirements.txt　→必要機能のダウンロード
 
-YOLO/ByteTrackを使用するため、実行時は必ず仮想環境を有効にしてください。
+YOLO/ByteTrackを使用するため、実行時は必ず仮想環境を有効にする
 
 
-`main.py` の次の設定を書き換えます。
+`main.py` の次の設定を変える
 
 ```python
 INPUT_ROOT = Path(".")
