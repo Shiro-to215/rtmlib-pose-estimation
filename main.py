@@ -1,6 +1,8 @@
 from pathlib import Path
 import csv
+from datetime import datetime
 import math
+import subprocess
 
 import cv2
 from rtmlib import Body, draw_skeleton
@@ -12,21 +14,22 @@ INPUT_ROOT = (
     Path.home()
     / "解析用動画ファイル"
     / "9-18-SMZ"
-    / "助走-GoPro"
+    / "空中左-SONY"
 )
-INPUT_VIDEO_NAME = "GX010063.MP4"   # 解析ファイル名を正しく入力
+INPUT_VIDEO_NAME = "C0033.MP4"   # 解析ファイル名を正しく入力
 
 # ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
 OUTPUT_ROOT = (
     Path.home()
     / "動画解析出力"
     / "9-18-SMZ"
-    / "助走-GoPro"
+    / "空中左-SONY"
 )
-OUTPUT_FOLDER_NAME = "助走-1"
-OUTPUT_VIDEO_NAME = "助走-1.mp4"
-OUTPUT_YOLO_VIDEO_NAME = "助走_yolo-1.mp4"  # 実験用: YOLO検出・追跡結果
-OUTPUT_CSV_NAME = "助走-1.csv"
+OUTPUT_FOLDER_NAME = "空中左-1"
+OUTPUT_VIDEO_NAME = "空中左-1.mp4"
+OUTPUT_YOLO_VIDEO_NAME = "空中左_yolo-1.mp4"  # 実験用: YOLO検出・追跡結果
+OUTPUT_CSV_NAME = "空中左-1.csv"
+OUTPUT_METADATA_NAME = "空中左-1_metadata.txt"
 
 # YOLO/ByteTrack設定。YOLO_MODELは初回実行時に自動ダウンロードされます。
 # 高速なnではなく、精度優先のmを使用します。
@@ -102,6 +105,99 @@ def find_input_video() -> Path:
             flush=True,
         )
     return matches[0]
+
+
+def write_video_metadata(
+    input_video: Path,
+    output_path: Path,
+    total_frames: int,
+    width: int,
+    height: int,
+    fps: float,
+) -> None:
+    recorded_at = get_recorded_at(input_video)
+    duration_seconds = total_frames / fps if fps > 0 else 0.0
+    duration_hours = int(duration_seconds // 3600)
+    duration_minutes = int((duration_seconds % 3600) // 60)
+    duration_remainder = duration_seconds % 60
+    output_path.write_text(
+        "元動画情報\n"
+        "====================\n"
+        f"元動画: {input_video.resolve()}\n"
+        f"動画の撮影日時: {recorded_at}\n"
+        f"総フレーム数: {total_frames}\n"
+        f"解像度（横 x 縦）: {width} x {height}\n"
+        f"FPS（1秒あたりのフレーム数）: {fps:.6f}\n"
+        f"動画全体の長さ（秒）: {duration_seconds:.6f}\n"
+        f"動画全体の長さ（時:分:秒）: {duration_hours:02d}:{duration_minutes:02d}:{duration_remainder:06.3f}\n",
+        encoding="utf-8",
+    )
+
+
+def get_recorded_at(input_video: Path) -> str:
+    # 1. まず ExifTool を使ってカメラ固有のオリジナル撮影日時の取得を試みる
+    try:
+        result = subprocess.run(
+            [
+                "exiftool",
+                "-s3",
+                "-DateTimeOriginal",
+                "-CreateDate",
+                str(input_video),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in result.stdout.splitlines():
+            value = line.strip()
+            if value:
+                return value
+    except FileNotFoundError:
+        pass
+
+    # 2. ExifTool がない場合は ffprobe で全メタデータから撮影日時タグを優先検索する
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags:stream_tags",
+                "-of",
+                "default=noprint_wrappers=1",
+                str(input_video),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        tags = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                tags[k.lower()] = v.strip()
+
+        # 編集日の可能性が高い creation_time より前に、オリジナルの撮影日時タグを検索
+        priority_keys = [
+            "tag:datetimeoriginal",
+            "tag:date",
+            "tag:com.sony.mxf.datetime",
+            "tag:creation_time",
+        ]
+        for key in priority_keys:
+            if key in tags:
+                value = tags[key]
+                try:
+                    recorded_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    return recorded_at.astimezone().isoformat(sep=" ", timespec="seconds")
+                except ValueError:
+                    return value
+    except FileNotFoundError:
+        return "取得不可（ffprobe/exiftoolがインストールされていません）"
+
+    return "取得不可（動画内に撮影日時メタデータがありません）"
 
 
 def clamp_box(box, width: int, height: int) -> tuple[int, int, int, int]:
@@ -780,6 +876,7 @@ def main() -> None:
     output_video = output_directory / OUTPUT_VIDEO_NAME
     output_yolo_video = output_directory / OUTPUT_YOLO_VIDEO_NAME
     output_csv = output_directory / OUTPUT_CSV_NAME
+    output_metadata = output_directory / OUTPUT_METADATA_NAME
 
     output_directory.mkdir(parents=True, exist_ok=True)
     _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
@@ -880,10 +977,20 @@ def main() -> None:
             capture.release()
             writer.release()
 
+    write_video_metadata(
+        input_video,
+        output_metadata,
+        frame_count,
+        width,
+        height,
+        fps,
+    )
+
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
     print(f"YOLO: {output_yolo_video.resolve()}")
     print(f"CSV: {output_csv.resolve()}")
+    print(f"Metadata: {output_metadata.resolve()}")
     print(f"Target boxes: {target_box_count}/{frame_count}")
     print(f"rtmlib calls: {pose_call_count}, accepted: {pose_success_count}")
 
