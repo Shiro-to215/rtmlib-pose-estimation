@@ -6,36 +6,32 @@ python -m pip install -r requirements.txt　→必要機能のダウンロード
 
 YOLO/ByteTrackを使用するため、実行時は必ず仮想環境を有効にする
 
+## GUIから実行する
 
-`main.py` の次の設定を変える
+仮想環境を有効にした状態で、プロジェクトのフォルダから次を実行します。
 
-```python
-INPUT_ROOT = Path(".")
-INPUT_VIDEO_NAME = "input.mp4"
-OUTPUT_ROOT = Path(".")
-OUTPUT_FOLDER_NAME = "pose_output"
-OUTPUT_VIDEO_NAME = "output_pose.mp4"
-OUTPUT_YOLO_VIDEO_NAME = "output_pose_yolo.mp4"
-OUTPUT_CSV_NAME = "output_pose.csv"
-CSV_MAX_PERSONS = 10
-YOLO_MODEL = "yolo11m.pt"
-YOLO_TRACKER = "bytetrack.yaml"
-YOLO_IMAGE_SIZE = 1280
-YOLO_CONFIDENCE = 0.20
-YOLO_TRACK_ID = None
-CROP_PADDING_RATIO = 0.25
-TARGET_SELECTION_MIN_FRAMES = 15
+```bash
+python gui.py
 ```
 
-- `INPUT_ROOT`: 動画を探し始める階層です。配下のフォルダも自動で探索します。
-- `INPUT_VIDEO_NAME`: 探索する動画ファイル名です。
-- `OUTPUT_ROOT`: 出力フォルダを作成する階層です。
-- `OUTPUT_FOLDER_NAME`: 自動作成する新規フォルダ名です。
-- `OUTPUT_VIDEO_NAME`: 骨格動画のファイル名です。
-- `OUTPUT_YOLO_VIDEO_NAME`: YOLOの検出枠・追跡IDを描画した実験用動画のファイル名です。
-- `OUTPUT_CSV_NAME`: 座標 CSV のファイル名です。Excelやスプレッドシートで開けます。
+GUIで入力動画と撮影日時取得用のサムネイルをファイル選択し、出力先フォルダとYOLO・姿勢推定・追跡の各設定を指定できます。入力用の親フォルダやファイル名を別々に設定する必要はありません。出力ファイル名は、出力先フォルダの最下層名を使って自動生成します。たとえばフォルダ名が `踏切左-7` の場合、`踏切左-7.mp4`、`踏切左-7-yolo.mp4`、`踏切左-7.csv`、`踏切左-7_metadata.txt` になります。現在の設定値を初期値として使用します。設定は `gui_settings.json` に保存され、次回起動時にも読み込まれます。「初期設定に戻す」を押すと、現在の初期値に戻ります。
+
+「解析を開始」を押すと、保存した設定で処理を起動し、ウィンドウ下部にログを表示します。「解析を中断」を押すと、その時点で実行中の解析プロセスを終了します。GUIは解析処理とは別のPythonプロセスを起動するため、GUIを起動したPython環境に `requirements.txt` の依存パッケージが必要です。macOSでTkinterが利用できない場合は、PythonのTk対応版を使用してください。
+
+進捗バーはYOLO処理を0〜50%、RTMLIB処理を50〜100%として表示します。
+
+GUIと解析ワーカーはどちらも `gui.py` から起動します。解析ワーカーはGUIが内部で起動するため、通常は `python gui.py` だけを実行します。
+
+
+## 設定項目
+
+以下はGUIの設定項目の説明です。設定値はGUIで編集できます。
+
+- 入力動画とサムネイル: GUIでファイルを選びます。親フォルダとファイル名は選択内容から自動設定されます。
+- 出力先フォルダ: GUIで選んだフォルダ内に結果を保存します。
+- 出力ファイル名: 骨格動画、YOLO動画、CSV、メタデータの名前を出力先フォルダ名から自動生成します。
 - `CSV_MAX_PERSONS`: CSVに用意する人物列の最大数です。必要な人数に合わせて変更してください。
-- `YOLO_MODEL`: 人物検出モデルです。初回実行時に自動ダウンロードされます。
+- YOLOモデルサイズ: GUIの選択肢 `n`、`s`、`m`、`l`、`x` から選びます。対応する `yolo11?.pt` を設定し、初回実行時に必要なモデルが自動ダウンロードされます。初期値は `m` です。
 - `YOLO_TRACKER`: トラッカー設定です。`bytetrack.yaml`を使用します。
 - `YOLO_IMAGE_SIZE`: YOLOの入力解像度です。大きいほど小さい人物を検出しやすくなりますが、処理時間が増えます。
 - `YOLO_CONFIDENCE`: YOLOの人物検出信頼度です。
@@ -43,18 +39,10 @@ TARGET_SELECTION_MIN_FRAMES = 15
 - `CROP_PADDING_RATIO`: 対象人物の上下左右に追加する余白です。`0.25`は25%です。
 - `TARGET_SELECTION_MIN_FRAMES`: 自動選択の候補にする最低検出フレーム数です。
 
-推定モデルを設定する
-[performance, balanced, lightweight]
-
-設定後、[コードをセーブしてから]以下をターミナルで実行します。
-
-`python3 main.py`
+姿勢推定モデルはGUIの選択肢 `performance`、`balanced`、`lightweight` から選べます。上記以外の追跡・推定設定もGUIから変更できます。
 
 
-
-
-
-動画は `INPUT_ROOT` の配下を `pathlib` で階層探索します。同じ名前の動画が複数ある場合は、見つかった順に並べて最初の1つを処理します。出力先には `OUTPUT_ROOT / OUTPUT_FOLDER_NAME` を新規作成し、その中に動画とCSVを保存します。
+選択した動画を処理し、選択した出力先フォルダに動画とCSVを保存します。
 
 CSVは1行に1フレームを記録します。同じフレームに複数人いる場合は、`person_0_id`、`person_1_id`のように人物ごとの列へ横並びで保存します。各人物について17部位ごとの`x`、`y`、`score`が入ります。人物を検出できなかった列は空欄になります。
 

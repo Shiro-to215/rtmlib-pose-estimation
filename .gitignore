@@ -4,3 +4,5 @@ __pycache__/
 *.mp4
 *.avi
 *.mov
+gui_settings.json
+yolo11*.pt

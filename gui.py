@@ -1,35 +1,52 @@
-from pathlib import Path
+from __future__ import annotations
+
+import argparse
 import csv
 from datetime import datetime
+import json
 import math
+import queue
 import subprocess
+import sys
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
-import cv2
-from rtmlib import Body, draw_skeleton
-from ultralytics import YOLO
+BASE_DIR = Path(__file__).resolve().parent
+SETTINGS_FILE = BASE_DIR / "gui_settings.json"
+HOME = Path.home()
 
-
-# ここを書き換えて、動画を探す階層とファイル名を指定してください。
+# GUIの初期値。通常の入力動画指定はGUIで行います。
 INPUT_ROOT = (
     Path.home()
     / "解析用動画ファイル"
     / "9-18-SMZ"
-    / "空中左-SONY"
+    / "踏切左-SONY"
 )
-INPUT_VIDEO_NAME = "C0033.MP4"   # 解析ファイル名を正しく入力
+INPUT_VIDEO_NAME = "H7.MP4"
 
-# ここを書き換えて、出力先の階層、新規フォルダ名、ファイル名を指定してください。
+# 撮影日時を取得するサムネイル画像のフォルダとファイル名を指定してください。
+THUMBNAIL_ROOT = (
+    Path.home()
+    / "解析用動画ファイル"
+    / "9-18-SMZ"
+    / "THMBNL"
+)
+THUMBNAIL_IMAGE_NAME = "H7.JPG"
+
+# GUIの初期値。解析時の出力先と名前はGUIから設定します。
 OUTPUT_ROOT = (
     Path.home()
     / "動画解析出力"
-    / "9-18-SMZ"
-    / "空中左-SONY"
+    / "9-18-SMZ-rtmlib"
+    / "踏切左-SONY"
 )
-OUTPUT_FOLDER_NAME = "空中左-1"
-OUTPUT_VIDEO_NAME = "空中左-1.mp4"
-OUTPUT_YOLO_VIDEO_NAME = "空中左_yolo-1.mp4"  # 実験用: YOLO検出・追跡結果
-OUTPUT_CSV_NAME = "空中左-1.csv"
-OUTPUT_METADATA_NAME = "空中左-1_metadata.txt"
+OUTPUT_FOLDER_NAME = "踏切左-7"
+OUTPUT_VIDEO_NAME = "踏切左-7.mp4"
+OUTPUT_YOLO_VIDEO_NAME = "踏切左-7-yolo.mp4"
+OUTPUT_CSV_NAME = "踏切左-7.csv"
+OUTPUT_METADATA_NAME = "踏切左-7_metadata.txt"
 
 # YOLO/ByteTrack設定。YOLO_MODELは初回実行時に自動ダウンロードされます。
 # 高速なnではなく、精度優先のmを使用します。
@@ -45,8 +62,9 @@ YOLO_CLASSES = [0]  # COCOのperson
 YOLO_TRACK_ID = None
 
 
-# 対象人物のクロップ設定。0.10は上下左右に10%相当の余白を追加します。
-CROP_PADDING_RATIO = 0.10
+
+# 対象人物のクロップ設定。0.25は上下左右に25%相当の余白を追加します。
+CROP_PADDING_RATIO = 0.25
 TARGET_REACQUIRE_MAX_DISTANCE = 300.0
 TARGET_REACQUIRE_MIN_IOU = 0.05
 
@@ -82,13 +100,98 @@ TARGET_LOCK_RAW_ID = True
 TARGET_SELECTION_MIN_FRAMES = 15
 TARGET_SELECTION_COVERAGE_WEIGHT = 0.5
 TARGET_BOX_FILL_MAX_FRAMES = 60
-POSE_TRACK_MAX_COST = 1.25
 POSE_TRACK_KEYPOINT_WEIGHT = 0.65
 POSE_TRACK_CENTER_WEIGHT = 0.25
 POSE_TRACK_SHAPE_WEIGHT = 0.10
+POSE_BOX_IOU_WEIGHT = 2.0
+POSE_BOX_CENTER_WEIGHT = 0.5
+POSE_TEMPORAL_WEIGHT = 0.5
+
+
+ENGINE_SETTING_NAMES = (
+    "INPUT_ROOT", "INPUT_VIDEO_NAME", "THUMBNAIL_ROOT", "THUMBNAIL_IMAGE_NAME",
+    "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME", "OUTPUT_VIDEO_NAME", "OUTPUT_YOLO_VIDEO_NAME",
+    "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
+    "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_TRACK_ID",
+    "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
+    "BACKEND", "DEVICE", "MODEL_MODE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
+    "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
+    "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
+    "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
+    "TRACK_PREDICTION_MAX_FRAMES", "TARGET_TRACK_MATCH_THRESHOLD", "TARGET_TRACK_MIN_IOU",
+    "TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING", "TARGET_LOCK_RAW_ID", "TARGET_SELECTION_MIN_FRAMES",
+    "TARGET_SELECTION_COVERAGE_WEIGHT", "TARGET_BOX_FILL_MAX_FRAMES", "POSE_TRACK_KEYPOINT_WEIGHT",
+    "POSE_TRACK_CENTER_WEIGHT", "POSE_TRACK_SHAPE_WEIGHT", "POSE_BOX_IOU_WEIGHT",
+    "POSE_BOX_CENTER_WEIGHT", "POSE_TEMPORAL_WEIGHT",
+)
+ENGINE_DEFAULTS = {key: globals()[key] for key in ENGINE_SETTING_NAMES}
+PATH_SETTING_KEYS = {"INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"}
+OUTPUT_NAME_KEYS = {
+    "OUTPUT_VIDEO_NAME", "OUTPUT_YOLO_VIDEO_NAME", "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME"
+}
+
+DEFAULTS = {
+    "INPUT_VIDEO_FILE": str(INPUT_ROOT / INPUT_VIDEO_NAME),
+    "THUMBNAIL_FILE": str(THUMBNAIL_ROOT / THUMBNAIL_IMAGE_NAME),
+    "OUTPUT_DIRECTORY": str(OUTPUT_ROOT / OUTPUT_FOLDER_NAME),
+}
+DEFAULTS.update({
+    key: value for key, value in ENGINE_DEFAULTS.items()
+    if key not in PATH_SETTING_KEYS and key not in OUTPUT_NAME_KEYS
+})
+
+GROUPS = [
+    ("入力・出力", ["INPUT_VIDEO_FILE", "THUMBNAIL_FILE", "OUTPUT_DIRECTORY"]),
+    ("YOLO・対象人物", ["YOLO_MODEL", "YOLO_TRACKER", "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE",
+                    "YOLO_IOU", "YOLO_CLASSES", "YOLO_TRACK_ID", "CROP_PADDING_RATIO",
+                    "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
+                    "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
+                    "TARGET_BOX_FILL_MAX_FRAMES"]),
+    ("姿勢推定・追跡", ["MODEL_MODE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
+                     "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
+                     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
+                     "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
+                     "TRACK_PREDICTED_BOX_WEIGHT", "TRACK_PREDICTION_MAX_FRAMES",
+                     "TARGET_TRACK_MATCH_THRESHOLD", "TARGET_TRACK_MIN_IOU",
+                     "TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING", "TARGET_LOCK_RAW_ID",
+                     "POSE_TRACK_KEYPOINT_WEIGHT", "POSE_TRACK_CENTER_WEIGHT", "POSE_TRACK_SHAPE_WEIGHT",
+                     "POSE_BOX_IOU_WEIGHT", "POSE_BOX_CENTER_WEIGHT", "POSE_TEMPORAL_WEIGHT"]),
+]
+PATH_KEYS = {"OUTPUT_DIRECTORY"}
+FILE_KEYS = {"INPUT_VIDEO_FILE", "THUMBNAIL_FILE"}
+BOOL_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, bool)}
+INT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, int) and not isinstance(value, bool)}
+FLOAT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, float)}
+LABELS = {
+    "INPUT_VIDEO_FILE": "入力動画",
+    "THUMBNAIL_FILE": "撮影日時用サムネイル（任意）",
+    "OUTPUT_DIRECTORY": "出力先フォルダ",
+    "YOLO_MODEL": "YOLOモデルサイズ",
+    "MODEL_MODE": "姿勢推定モデル",
+}
+CHOICES = {
+    "YOLO_MODEL": ("n", "s", "m", "l", "x"),
+    "MODEL_MODE": ("performance", "balanced", "lightweight"),
+}
+
+
+def output_names(output_directory: Path) -> dict[str, str]:
+    """選択された出力フォルダ名から出力ファイル名を作ります。"""
+    name = output_directory.name
+    if not name:
+        raise ValueError("出力先フォルダを指定してください。")
+    return {
+        "OUTPUT_VIDEO_NAME": f"{name}.mp4",
+        "OUTPUT_YOLO_VIDEO_NAME": f"{name}-yolo.mp4",
+        "OUTPUT_CSV_NAME": f"{name}.csv",
+        "OUTPUT_METADATA_NAME": f"{name}_metadata.txt",
+    }
 
 
 def find_input_video() -> Path:
+    direct_match = INPUT_ROOT / INPUT_VIDEO_NAME
+    if direct_match.is_file():
+        return direct_match
     matches = sorted(
         path
         for path in INPUT_ROOT.rglob(INPUT_VIDEO_NAME)
@@ -117,9 +220,7 @@ def write_video_metadata(
 ) -> None:
     recorded_at = get_recorded_at(input_video)
     duration_seconds = total_frames / fps if fps > 0 else 0.0
-    duration_hours = int(duration_seconds // 3600)
-    duration_minutes = int((duration_seconds % 3600) // 60)
-    duration_remainder = duration_seconds % 60
+    
     output_path.write_text(
         "元動画情報\n"
         "====================\n"
@@ -128,33 +229,39 @@ def write_video_metadata(
         f"総フレーム数: {total_frames}\n"
         f"解像度（横 x 縦）: {width} x {height}\n"
         f"FPS（1秒あたりのフレーム数）: {fps:.6f}\n"
-        f"動画全体の長さ（秒）: {duration_seconds:.6f}\n"
-        f"動画全体の長さ（時:分:秒）: {duration_hours:02d}:{duration_minutes:02d}:{duration_remainder:06.3f}\n",
+        f"動画全体の長さ（秒）: {duration_seconds:.3f}\n",
         encoding="utf-8",
     )
 
 
 def get_recorded_at(input_video: Path) -> str:
-    # 1. まず ExifTool を使ってカメラ固有のオリジナル撮影日時の取得を試みる
-    try:
-        result = subprocess.run(
-            [
-                "exiftool",
-                "-s3",
-                "-DateTimeOriginal",
-                "-CreateDate",
-                str(input_video),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        for line in result.stdout.splitlines():
-            value = line.strip()
-            if value:
-                return value
-    except FileNotFoundError:
-        pass
+    thumbnail_path = THUMBNAIL_ROOT / THUMBNAIL_IMAGE_NAME
+    metadata_source = (
+        thumbnail_path
+        if thumbnail_path.is_file()
+        else input_video
+    )
+
+    # DateTimeOriginalを優先し、記録がない場合だけCreateDateを使う。
+    for date_tag in ("DateTimeOriginal", "CreateDate"):
+        try:
+            result = subprocess.run(
+                [
+                    "exiftool",
+                    "-s3",
+                    f"-{date_tag}",
+                    str(metadata_source),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            for line in result.stdout.splitlines():
+                value = line.strip()
+                if value:
+                    return value
+        except FileNotFoundError:
+            break
 
     # 2. ExifTool がない場合は ffprobe で全メタデータから撮影日時タグを優先検索する
     try:
@@ -167,7 +274,7 @@ def get_recorded_at(input_video: Path) -> str:
                 "format_tags:stream_tags",
                 "-of",
                 "default=noprint_wrappers=1",
-                str(input_video),
+                str(metadata_source),
             ],
             capture_output=True,
             text=True,
@@ -322,10 +429,19 @@ def pose_from_crop(body, frame, target_box, previous_keypoints=None, previous_sc
     keypoints, scores = body(crop)
     if len(keypoints) == 0:
         return None, None, (crop_left, crop_top, crop_right, crop_bottom)
-    target_center = box_center(target_box)
-    local_target_center = (
-        target_center[0] - crop_left,
-        target_center[1] - crop_top,
+    local_target_box = (
+        float(target_box[0]) - crop_left,
+        float(target_box[1]) - crop_top,
+        float(target_box[2]) - crop_left,
+        float(target_box[3]) - crop_top,
+    )
+    local_target_center = box_center(local_target_box)
+    target_scale = max(
+        math.hypot(
+            local_target_box[2] - local_target_box[0],
+            local_target_box[3] - local_target_box[1],
+        ),
+        1.0,
     )
     local_previous_keypoints = None
     if previous_keypoints is not None:
@@ -333,28 +449,26 @@ def pose_from_crop(body, frame, target_box, previous_keypoints=None, previous_sc
             (float(point[0]) - crop_left, float(point[1]) - crop_top)
             for point in previous_keypoints
         ]
-    if previous_keypoints is None or previous_scores is None:
-        pose_index = min(
-            range(len(keypoints)),
-            key=lambda index: math.dist(
-                get_person_geometry(keypoints[index], scores[index])["center"],
-                local_target_center,
-            ),
-        )
-    else:
-        pose_costs = [
-            pose_match_cost(
+    candidate_costs = []
+    for candidate_keypoints, candidate_scores in zip(keypoints, scores):
+        geometry = get_person_geometry(candidate_keypoints, candidate_scores)
+        iou_cost = 1.0 - bbox_iou(local_target_box, geometry["bbox"])
+        center_cost = math.dist(geometry["center"], local_target_center) / target_scale
+        temporal_cost = 0.0
+        if local_previous_keypoints is not None and previous_scores is not None:
+            temporal_cost = pose_match_cost(
                 candidate_keypoints,
                 candidate_scores,
                 local_target_center,
                 local_previous_keypoints,
                 previous_scores,
             )
-            for candidate_keypoints, candidate_scores in zip(keypoints, scores)
-        ]
-        pose_index = min(range(len(pose_costs)), key=pose_costs.__getitem__)
-        if pose_costs[pose_index] > POSE_TRACK_MAX_COST:
-            return None, None, (crop_left, crop_top, crop_right, crop_bottom)
+        candidate_costs.append(
+            POSE_BOX_IOU_WEIGHT * iou_cost
+            + POSE_BOX_CENTER_WEIGHT * center_cost
+            + POSE_TEMPORAL_WEIGHT * temporal_cost
+        )
+    pose_index = min(range(len(candidate_costs)), key=candidate_costs.__getitem__)
     local_keypoints = keypoints[pose_index]
     local_scores = scores[pose_index]
     restored_keypoints = [
@@ -811,13 +925,14 @@ def fill_target_box_gaps(frame_detections, target_stable_id):
     return target_boxes
 
 
-def run_yolo_pass(input_video: Path, output_yolo_video: Path):
+def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_frames=0):
     capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = progress_total_frames or int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     writer = cv2.VideoWriter(
         str(output_yolo_video),
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -835,6 +950,9 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path):
     next_id = 0
     target_stable_id = YOLO_TRACK_ID
     frame_detections = []
+    processed_frames = 0
+    last_progress = -1
+    print("PROGRESS:0:YOLO", flush=True)
     try:
         while True:
             success, frame = capture.read()
@@ -858,9 +976,16 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path):
             )
             frame_detections.append(detections)
             writer.write(draw_stable_yolo_tracks(frame, detections))
+            processed_frames += 1
+            if total_frames > 0:
+                progress = min(49, int(processed_frames * 50 / total_frames))
+                if progress > last_progress:
+                    print(f"PROGRESS:{progress}:YOLO", flush=True)
+                    last_progress = progress
     finally:
         capture.release()
         writer.release()
+    print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
         target_stable_id = select_moving_target_id(
             frame_detections,
@@ -870,7 +995,7 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path):
     return frame_detections, target_boxes, target_stable_id, width, height, fps
 
 
-def main() -> None:
+def run_analysis() -> None:
     input_video = find_input_video()
     output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
     output_video = output_directory / OUTPUT_VIDEO_NAME
@@ -879,9 +1004,29 @@ def main() -> None:
     output_metadata = output_directory / OUTPUT_METADATA_NAME
 
     output_directory.mkdir(parents=True, exist_ok=True)
+
+    metadata_capture = cv2.VideoCapture(str(input_video))
+    if not metadata_capture.isOpened():
+        raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
+    metadata_total_frames = int(metadata_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    metadata_width = int(metadata_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    metadata_height = int(metadata_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    metadata_fps = metadata_capture.get(cv2.CAP_PROP_FPS) or 30.0
+    metadata_capture.release()
+
+    write_video_metadata(
+        input_video,
+        output_metadata,
+        metadata_total_frames,
+        metadata_width,
+        metadata_height,
+        metadata_fps,
+    )
+
     _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
         input_video,
         output_yolo_video,
+        metadata_total_frames,
     )
     pose_model = Body(
         mode=MODEL_MODE,
@@ -913,6 +1058,9 @@ def main() -> None:
             pose_success_count = 0
             previous_target_keypoints = None
             previous_target_scores = None
+            last_progress = 50
+            total_pose_frames = len(target_boxes)
+            print("PROGRESS:50:RTMLIB", flush=True)
             while frame_count < len(target_boxes):
                 success, frame = capture.read()
                 if not success:
@@ -968,8 +1116,25 @@ def main() -> None:
                         cv2.LINE_AA,
                     )
 
+                cv2.putText(
+                    frame,
+                    f"Frame: {frame_count + 1}",
+                    (40, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
                 writer.write(frame)
                 frame_count += 1
+
+                if total_pose_frames > 0:
+                    progress = 50 + int(frame_count * 50 / total_pose_frames)
+                    if progress > last_progress:
+                        print(f"PROGRESS:{progress}:RTMLIB", flush=True)
+                        last_progress = progress
 
                 if frame_count % 30 == 0:
                     print(f"Processed {frame_count} frames", flush=True)
@@ -977,14 +1142,7 @@ def main() -> None:
             capture.release()
             writer.release()
 
-    write_video_metadata(
-        input_video,
-        output_metadata,
-        frame_count,
-        width,
-        height,
-        fps,
-    )
+    print("PROGRESS:100:RTMLIB", flush=True)
 
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
@@ -995,5 +1153,306 @@ def main() -> None:
     print(f"rtmlib calls: {pose_call_count}, accepted: {pose_success_count}")
 
 
+class PoseGui(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("動画姿勢推定")
+        self.geometry("1150x820")
+        self.minsize(900, 600)
+        self.values = dict(DEFAULTS)
+        if SETTINGS_FILE.exists():
+            try:
+                saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                self.values.update({key: value for key, value in saved.items() if key in DEFAULTS})
+                # 旧GUIの保存設定（親フォルダとファイル名）も新しいファイル選択欄へ引き継ぎます。
+                if "INPUT_VIDEO_FILE" not in saved and "INPUT_ROOT" in saved:
+                    self.values["INPUT_VIDEO_FILE"] = str(Path(saved["INPUT_ROOT"]) / saved.get("INPUT_VIDEO_NAME", ""))
+                if "THUMBNAIL_FILE" not in saved and "THUMBNAIL_ROOT" in saved:
+                    self.values["THUMBNAIL_FILE"] = str(Path(saved["THUMBNAIL_ROOT"]) / saved.get("THUMBNAIL_IMAGE_NAME", ""))
+                if "OUTPUT_DIRECTORY" not in saved and "OUTPUT_ROOT" in saved:
+                    self.values["OUTPUT_DIRECTORY"] = str(Path(saved["OUTPUT_ROOT"]) / saved.get("OUTPUT_FOLDER_NAME", ""))
+            except (OSError, json.JSONDecodeError) as exc:
+                messagebox.showwarning("設定ファイル", f"保存済み設定を読み込めませんでした。初期設定で起動します。\n{exc}")
+        self.vars = {}
+        self.process = None
+        self.cancel_requested = False
+        self.log_queue = queue.Queue()
+        self._build()
+
+    def _build(self):
+        top = ttk.Frame(self, padding=(12, 10))
+        top.pack(fill="x")
+        ttk.Label(top, text="入力動画、出力先、推定・追跡の設定を指定して実行します。", wraplength=850).pack(anchor="w")
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True, padx=12)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        self.form = ttk.Frame(canvas, padding=(4, 4, 12, 12))
+        self.output_preview = tk.StringVar()
+        self.form.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        form_window = canvas.create_window((0, 0), window=self.form, anchor="nw")
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(form_window, width=event.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        for title, keys in GROUPS:
+            group = ttk.LabelFrame(self.form, text=title, padding=10)
+            group.pack(fill="x", pady=(0, 10))
+            group.columnconfigure(1, weight=1)
+            for row, key in enumerate(keys):
+                ttk.Label(group, text=LABELS.get(key, key)).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
+                if key in BOOL_KEYS:
+                    variable = tk.BooleanVar(value=self.values[key])
+                    widget = ttk.Checkbutton(group, variable=variable)
+                    widget.grid(row=row, column=1, sticky="w", pady=3)
+                elif key in CHOICES:
+                    current = str(self.values[key])
+                    if key == "YOLO_MODEL":
+                        current = current.removeprefix("yolo11").removesuffix(".pt")
+                    variable = tk.StringVar(value=current)
+                    widget = ttk.Combobox(group, textvariable=variable, values=CHOICES[key], state="readonly", width=8)
+                    widget.grid(row=row, column=1, sticky="w", pady=3)
+                else:
+                    value = self.values[key]
+                    if key == "YOLO_TRACK_ID" and value is None:
+                        value = ""
+                    variable = tk.StringVar(value=self._format(value))
+                    widget = ttk.Entry(group, textvariable=variable)
+                    widget.grid(row=row, column=1, sticky="ew", pady=3)
+                    if key in PATH_KEYS:
+                        ttk.Button(group, text="参照…", command=lambda k=key: self._choose_dir(k)).grid(row=row, column=2, padx=(6, 0))
+                    elif key in FILE_KEYS:
+                        ttk.Button(group, text="参照…", command=lambda k=key: self._choose_file(k)).grid(row=row, column=2, padx=(6, 0))
+                self.vars[key] = variable
+                if key == "OUTPUT_DIRECTORY":
+                    variable.trace_add("write", self._update_output_preview)
+                    ttk.Label(group, textvariable=self.output_preview, wraplength=850).grid(
+                        row=row + 1, column=1, columnspan=2, sticky="w", pady=(4, 2)
+                    )
+                    self._update_output_preview()
+        actions = ttk.Frame(self, padding=12)
+        actions.pack(fill="x")
+        self.status = ttk.Label(actions, text="待機中")
+        self.status.pack(side="left", fill="x", expand=True)
+        self.progress_value = tk.IntVar(value=0)
+        self.progress_label = ttk.Label(actions, text="0%")
+        self.progress_label.pack(side="right", padx=(6, 12))
+        self.progress_bar = ttk.Progressbar(actions, maximum=100, variable=self.progress_value, length=220)
+        self.progress_bar.pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="初期設定に戻す", command=self._reset).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="設定を保存", command=self._save).pack(side="right", padx=(6, 0))
+        self.cancel_button = ttk.Button(actions, text="解析を中断", command=self._cancel, state="disabled")
+        self.cancel_button.pack(side="right", padx=(6, 0))
+        self.start_button = ttk.Button(actions, text="解析を開始", command=self._start)
+        self.start_button.pack(side="right")
+        log_frame = ttk.LabelFrame(self, text="実行ログ", padding=8)
+        log_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.log = tk.Text(log_frame, height=9, wrap="word", state="disabled")
+        log_scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
+        self.log.configure(yscrollcommand=log_scroll.set)
+        self.log.pack(side="left", fill="both", expand=True)
+        log_scroll.pack(side="right", fill="y")
+        self.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+    @staticmethod
+    def _format(value):
+        if isinstance(value, list):
+            return ", ".join(map(str, value))
+        return str(value)
+
+    def _choose_dir(self, key):
+        selected = filedialog.askdirectory(initialdir=self.vars[key].get() or str(HOME))
+        if selected:
+            self.vars[key].set(selected)
+
+    def _update_output_preview(self, *_args):
+        try:
+            names = output_names(Path(self.vars["OUTPUT_DIRECTORY"].get().strip()))
+            self.output_preview.set("生成ファイル: " + " / ".join(names.values()))
+        except ValueError:
+            self.output_preview.set("出力先フォルダ名からファイル名を自動生成します")
+
+    def _choose_file(self, key):
+        is_video = key == "INPUT_VIDEO_FILE"
+        initial = self.vars[key].get() or str(HOME)
+        initial_path = Path(initial).expanduser()
+        selected = filedialog.askopenfilename(initialdir=str(initial_path.parent),
+            filetypes=[("動画ファイル", "*.mp4 *.MP4 *.mov *.MOV *.avi *.mkv") , ("画像ファイル", "*.jpg *.JPG *.jpeg *.png")] if not is_video else [("動画ファイル", "*.mp4 *.MP4 *.mov *.MOV *.avi *.mkv"), ("すべてのファイル", "*.*")])
+        if selected:
+            self.vars[key].set(str(Path(selected).expanduser()))
+
+    def _collect(self):
+        settings = {}
+        for key, variable in self.vars.items():
+            if key in BOOL_KEYS:
+                settings[key] = bool(variable.get())
+                continue
+            value = variable.get().strip()
+            if key == "YOLO_MODEL":
+                if value not in CHOICES[key]:
+                    raise ValueError("YOLOモデルサイズは n / s / m / l / x から選択してください。")
+                settings[key] = f"yolo11{value}.pt"
+            elif key == "MODEL_MODE":
+                if value not in CHOICES[key]:
+                    raise ValueError("姿勢推定モデルを選択してください。")
+                settings[key] = value
+            elif key in PATH_KEYS or key in FILE_KEYS or key in {"YOLO_TRACKER", "MODEL_MODE", "BACKEND", "DEVICE"} or key.startswith("OUTPUT_"):
+                settings[key] = value
+            elif key == "YOLO_TRACK_ID":
+                settings[key] = None if not value else int(value)
+            elif key == "YOLO_CLASSES":
+                settings[key] = [int(part.strip()) for part in value.split(",") if part.strip()]
+            elif key in INT_KEYS:
+                settings[key] = int(value)
+            elif key in FLOAT_KEYS:
+                settings[key] = float(value)
+            else:
+                settings[key] = value
+        video_path = Path(settings.pop("INPUT_VIDEO_FILE")).expanduser()
+        thumbnail_value = settings.pop("THUMBNAIL_FILE").strip()
+        output_directory = Path(settings.pop("OUTPUT_DIRECTORY")).expanduser()
+        settings.update({
+            "INPUT_ROOT": str(video_path.parent),
+            "INPUT_VIDEO_NAME": video_path.name,
+            "THUMBNAIL_ROOT": str(Path(thumbnail_value).parent) if thumbnail_value else "",
+            "THUMBNAIL_IMAGE_NAME": Path(thumbnail_value).name if thumbnail_value else "",
+            "OUTPUT_ROOT": str(output_directory.parent),
+            "OUTPUT_FOLDER_NAME": output_directory.name,
+        })
+        settings.update(output_names(output_directory))
+        return settings
+
+    def _save(self, show_message=True):
+        try:
+            settings = self._collect()
+            SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            if show_message:
+                self.status.configure(text=f"設定を保存しました: {SETTINGS_FILE.name}")
+            return settings
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("設定エラー", f"設定値を確認してください。\n{exc}")
+            return None
+
+    def _reset(self):
+        for key, variable in self.vars.items():
+            if key in BOOL_KEYS:
+                variable.set(DEFAULTS[key])
+            else:
+                value = "" if key == "YOLO_TRACK_ID" else self._format(DEFAULTS[key])
+                variable.set(value)
+        self._save(show_message=False)
+        self.status.configure(text="現在の設定を初期値に戻しました")
+
+    def _start(self):
+        settings = self._save(show_message=False)
+        if settings is None:
+            return
+        if not settings["INPUT_VIDEO_NAME"]:
+            messagebox.showerror("入力エラー", "入力動画を指定してください。")
+            return
+        video = Path(settings["INPUT_ROOT"]).expanduser() / settings["INPUT_VIDEO_NAME"]
+        if not video.is_file():
+            messagebox.showerror("入力エラー", f"入力動画が見つかりません。\n{video}")
+            return
+        config = SETTINGS_FILE
+        self.cancel_requested = False
+        self.process = None
+        self.progress_value.set(0)
+        self.progress_label.configure(text="0%")
+        self.start_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.status.configure(text="解析を実行中…")
+        self._append(f"設定を保存しました: {config}\n解析を開始します: {video}\n")
+        threading.Thread(target=self._run_process, args=(config,), daemon=True).start()
+
+    def _cancel(self):
+        self.cancel_requested = True
+        self.cancel_button.configure(state="disabled")
+        self.status.configure(text="解析を中断しています…")
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+
+    def _run_process(self, config):
+        try:
+            self.process = subprocess.Popen([sys.executable, str(BASE_DIR / "gui.py"), "--analysis-worker", "--config", str(config)],
+                cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+            if self.cancel_requested:
+                self.process.terminate()
+            for line in self.process.stdout:
+                self.log_queue.put(line)
+            code = self.process.wait()
+            self.log_queue.put(("__FINISHED__", code))
+        except Exception as exc:
+            self.log_queue.put(f"起動エラー: {exc}\n")
+            self.log_queue.put(("__FINISHED__", -1))
+
+    def _append(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text)
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _poll(self):
+        try:
+            while True:
+                item = self.log_queue.get_nowait()
+                if isinstance(item, tuple) and item[0] == "__FINISHED__":
+                    self.start_button.configure(state="normal")
+                    self.cancel_button.configure(state="disabled")
+                    if self.cancel_requested:
+                        self.status.configure(text="解析を中断しました")
+                    else:
+                        self.status.configure(text="解析が完了しました" if item[1] == 0 else f"解析が終了しました（終了コード {item[1]}）")
+                    if item[1] == 0:
+                        self.progress_value.set(100)
+                        self.progress_label.configure(text="100%")
+                    self._append(f"\n--- 終了コード: {item[1]} ---\n")
+                elif isinstance(item, str) and item.startswith("PROGRESS:"):
+                    try:
+                        percent, phase = item.strip().split(":", 2)[1:]
+                        self.progress_value.set(int(percent))
+                        self.progress_label.configure(text=f"{int(percent)}%")
+                        self.status.configure(text="YOLO処理中…" if phase == "YOLO" else "RTMLIB処理中…")
+                    except (ValueError, IndexError):
+                        self._append(item)
+                else:
+                    self._append(item)
+        except queue.Empty:
+            pass
+        self.after(150, self._poll)
+
+
+def run_analysis_worker(config_path: Path) -> None:
+    """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
+    import importlib
+
+    globals()["cv2"] = importlib.import_module("cv2")
+    rtmlib = importlib.import_module("rtmlib")
+    globals()["Body"] = rtmlib.Body
+    globals()["draw_skeleton"] = rtmlib.draw_skeleton
+    globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
+
+    settings = json.loads(config_path.read_text(encoding="utf-8"))
+    unknown = set(settings) - set(ENGINE_DEFAULTS)
+    if unknown:
+        raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")
+    for key, value in settings.items():
+        if key in PATH_SETTING_KEYS:
+            value = Path(value).expanduser()
+        globals()[key] = value
+    run_analysis()
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="動画姿勢推定 GUI / 解析ワーカー")
+    parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.analysis_worker:
+        if args.config is None:
+            parser.error("解析ワーカーには --config が必要です")
+        run_analysis_worker(args.config)
+    else:
+        app = PoseGui()
+        app.after(150, app._poll)
+        app.mainloop()
