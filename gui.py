@@ -12,6 +12,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from time import perf_counter
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = BASE_DIR / "gui_settings.json"
@@ -75,9 +76,12 @@ COCO_KEYPOINTS = [
 ]
 
 BACKEND = "onnxruntime"
-DEVICE = "cpu"
+DEVICE = "auto"
 #推定モデルを設定[performance , balanced , lightweight]
 MODEL_MODE = "performance"
+RTMLIB_POSE_MODEL = "mode"
+RTMLIB_POSE_INPUT_SIZE = "mode"
+RTMLIB_PERSON_DETECTOR = "mode"
 
 #各種設定
 KEYPOINT_THRESHOLD = 0.45
@@ -114,7 +118,8 @@ ENGINE_SETTING_NAMES = (
     "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
     "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_TRACK_ID",
     "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
-    "BACKEND", "DEVICE", "MODEL_MODE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
+    "BACKEND", "DEVICE", "MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+    "RTMLIB_PERSON_DETECTOR", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
     "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
@@ -147,7 +152,8 @@ GROUPS = [
                     "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
                     "TARGET_BOX_FILL_MAX_FRAMES"]),
-    ("姿勢推定・追跡", ["MODEL_MODE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
+    ("姿勢推定・追跡", ["MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+                     "RTMLIB_PERSON_DETECTOR", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
                      "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
                      "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
                      "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
@@ -168,11 +174,138 @@ LABELS = {
     "OUTPUT_DIRECTORY": "出力先フォルダ",
     "YOLO_MODEL": "YOLOモデルサイズ",
     "MODEL_MODE": "姿勢推定モデル",
+    "RTMLIB_POSE_MODEL": "RTMPoseモデル（mode=既存モード）",
+    "RTMLIB_POSE_INPUT_SIZE": "RTMPose入力解像度（mode=モードに合わせる）",
+    "RTMLIB_PERSON_DETECTOR": "RTMLib人物検出器 YOLOX（mode=既存モード）",
+    "DEVICE": "実行デバイス（YOLO・姿勢推定）",
 }
 CHOICES = {
     "YOLO_MODEL": ("n", "s", "m", "l", "x"),
     "MODEL_MODE": ("performance", "balanced", "lightweight"),
+    "RTMLIB_POSE_MODEL": ("mode", "t", "s", "m", "l", "x"),
+    "RTMLIB_POSE_INPUT_SIZE": ("mode", "256x192", "384x288"),
+    "RTMLIB_PERSON_DETECTOR": ("mode", "nano", "tiny", "s", "m", "l", "x"),
+    "DEVICE": ("auto", "cpu", "cuda"),
 }
+
+RTMLIB_MODE_POSE = {
+    "performance": ("x", "384x288"),
+    "balanced": ("m", "256x192"),
+    "lightweight": ("s", "256x192"),
+}
+RTMLIB_MODE_DETECTOR = {
+    "performance": "x",
+    "balanced": "m",
+    "lightweight": "tiny",
+}
+RTMLIB_POSE_ASSETS = {
+    "t": {
+        "256x192": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip",
+            "input_size": (192, 256),
+        },
+    },
+    "s": {
+        "256x192": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.zip",
+            "input_size": (192, 256),
+        },
+    },
+    "m": {
+        "256x192": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip",
+            "input_size": (192, 256),
+        },
+    },
+    "l": {
+        "256x192": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-body7_pt-body7_420e-256x192-4dba18fc_20230504.zip",
+            "input_size": (192, 256),
+        },
+        "384x288": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-body7_pt-body7_420e-384x288-3f5a1437_20230504.zip",
+            "input_size": (288, 384),
+        },
+    },
+    "x": {
+        "384x288": {
+            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-x_simcc-body7_pt-body7_700e-384x288-71d7b7e9_20230629.zip",
+            "input_size": (288, 384),
+        },
+    },
+}
+RTMLIB_PERSON_DETECTOR_ASSETS = {
+    "nano": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_nano_8xb8-300e_humanart-40f6f0d0.zip",
+        "input_size": (416, 416),
+    },
+    "tiny": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip",
+        "input_size": (416, 416),
+    },
+    "s": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_s_8xb8-300e_humanart-3ef259a7.zip",
+        "input_size": (640, 640),
+    },
+    "m": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_m_8xb8-300e_humanart-c2c7a14a.zip",
+        "input_size": (640, 640),
+    },
+    "l": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_l_8xb8-300e_humanart-ce1d7a62.zip",
+        "input_size": (640, 640),
+    },
+    "x": {
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_x_8xb8-300e_humanart-a39d44ed.zip",
+        "input_size": (640, 640),
+    },
+}
+RTMLIB_DETECTOR_SCORE_THRESHOLD = 0.7
+RTMLIB_DETECTOR_NMS_THRESHOLD = 0.45
+
+
+def resolve_rtmlib_selection(mode: str, pose_model: str, pose_input_size: str, person_detector: str) -> dict:
+    """Resolve preset/manual RTMLib model choices to downloadable models and input sizes."""
+    if mode not in RTMLIB_MODE_POSE:
+        raise ValueError(f"不明なRTMLib推定モードです: {mode}")
+
+    mode_pose, mode_resolution = RTMLIB_MODE_POSE[mode]
+    selected_pose = mode_pose if pose_model == "mode" else pose_model
+    if selected_pose not in RTMLIB_POSE_ASSETS:
+        raise ValueError(f"不明なRTMPoseモデルです: {pose_model}")
+
+    if pose_input_size == "mode":
+        if pose_model == "mode":
+            selected_resolution = mode_resolution
+        elif mode_resolution in RTMLIB_POSE_ASSETS[selected_pose]:
+            selected_resolution = mode_resolution
+        else:
+            selected_resolution = next(iter(RTMLIB_POSE_ASSETS[selected_pose]))
+    else:
+        selected_resolution = pose_input_size
+
+    pose_asset = RTMLIB_POSE_ASSETS[selected_pose].get(selected_resolution)
+    if pose_asset is None:
+        available = " / ".join(RTMLIB_POSE_ASSETS[selected_pose])
+        raise ValueError(
+            f"RTMPose-{selected_pose.upper()} は {selected_resolution} に対応していません。"
+            f"使用できる解像度: {available}。"
+        )
+
+    selected_detector = (
+        RTMLIB_MODE_DETECTOR[mode] if person_detector == "mode" else person_detector
+    )
+    detector_asset = RTMLIB_PERSON_DETECTOR_ASSETS.get(selected_detector)
+    if detector_asset is None:
+        raise ValueError(f"不明なRTMLib人物検出器です: {person_detector}")
+
+    return {
+        "pose_model": selected_pose,
+        "pose_resolution": selected_resolution,
+        "pose_asset": pose_asset,
+        "person_detector": selected_detector,
+        "detector_asset": detector_asset,
+    }
 
 
 def output_names(output_directory: Path) -> dict[str, str]:
@@ -925,7 +1058,91 @@ def fill_target_box_gaps(frame_detections, target_stable_id):
     return target_boxes
 
 
-def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_frames=0):
+def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
+    """両方の推論エンジンで使えるデバイスを選び、CUDA DLLを読み込みます。"""
+    import torch
+
+    device = device.strip().lower()
+    if device not in {"auto", "cpu", "cuda"} and not (
+        device.startswith("cuda:") and device[5:].isdigit()
+    ):
+        raise ValueError("DEVICE は auto / cpu / cuda / cuda:番号 を指定してください。")
+    if device == "cpu":
+        print("実行デバイス: CPU（YOLO・姿勢推定）", flush=True)
+        return "cpu", "cpu"
+
+    reason = None
+    if backend != "onnxruntime":
+        reason = "GPU実行には BACKEND=onnxruntime を指定してください。"
+    elif not torch.cuda.is_available():
+        reason = "PyTorchでCUDAを利用できません。GPU版PyTorchとNVIDIAドライバーを確認してください。"
+    else:
+        import onnxruntime as ort
+
+        # PyTorchと同じCUDA/cuDNN DLLを使います（特にWindowsで必要）。
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            reason = "ONNX RuntimeでCUDAを利用できません。onnxruntime-gpuを導入してください。"
+    if reason is not None:
+        if device != "auto":
+            raise RuntimeError(reason)
+        print(f"{reason}\n実行デバイス: CPU（YOLO・姿勢推定）", flush=True)
+        return "cpu", "cpu"
+
+    index = int(device.split(":")[1]) if ":" in device else 0
+    if index >= torch.cuda.device_count():
+        raise ValueError(f"GPU番号 {index} は存在しません。")
+    print(f"実行デバイス: CUDA:{index} / {torch.cuda.get_device_name(index)}（YOLO・姿勢推定）", flush=True)
+    return f"cuda:{index}", f"cuda:{index}"
+
+
+def create_pose_model(device: str):
+    selection = resolve_rtmlib_selection(
+        MODEL_MODE,
+        RTMLIB_POSE_MODEL,
+        RTMLIB_POSE_INPUT_SIZE,
+        RTMLIB_PERSON_DETECTOR,
+    )
+    pose_asset = selection["pose_asset"]
+    detector_asset = selection["detector_asset"]
+    print(
+        f"RTMLIB姿勢モデル: RTMPose-{selection['pose_model'].upper()} "
+        f"({selection['pose_resolution']})",
+        flush=True,
+    )
+    detector_size = detector_asset["input_size"]
+    print(
+        f"RTMLIB人物検出器: YOLOX-{selection['person_detector'].upper()} "
+        f"({detector_size[1]}x{detector_size[0]}), "
+        f"score_thr={RTMLIB_DETECTOR_SCORE_THRESHOLD:.2f}, "
+        f"nms_thr={RTMLIB_DETECTOR_NMS_THRESHOLD:.2f}",
+        flush=True,
+    )
+    model = Body(
+        det=detector_asset["url"],
+        det_input_size=detector_asset["input_size"],
+        pose=pose_asset["url"],
+        pose_input_size=pose_asset["input_size"],
+        mode=MODEL_MODE,
+        backend=BACKEND,
+        device=device,
+    )
+    model.det_model.score_thr = RTMLIB_DETECTOR_SCORE_THRESHOLD
+    model.det_model.nms_thr = RTMLIB_DETECTOR_NMS_THRESHOLD
+    if BACKEND == "onnxruntime":
+        for name in ("det_model", "pose_model"):
+            providers = getattr(model, name).session.get_providers()
+            print(f"RTMLIB {name}: {', '.join(providers)}", flush=True)
+            if device.startswith("cuda") and "CUDAExecutionProvider" not in providers:
+                raise RuntimeError(
+                    f"RTMLIB {name} のCUDA初期化に失敗しました。"
+                    "CUDA/cuDNNのバージョンを確認するか、DEVICE=cpu を選択してください。"
+                )
+    return model
+
+
+def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_frames=0, device="cpu"):
     capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
@@ -960,6 +1177,7 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
                 break
             results = detector.track(
                 frame,
+                device=device,
                 persist=True,
                 tracker=YOLO_TRACKER,
                 imgsz=YOLO_IMAGE_SIZE,
@@ -985,6 +1203,7 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
     finally:
         capture.release()
         writer.release()
+    print(f"YOLO処理フレーム数: {processed_frames}（動画情報の値: {total_frames}）", flush=True)
     print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
         target_stable_id = select_moving_target_id(
@@ -996,6 +1215,11 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
 
 
 def run_analysis() -> None:
+    yolo_device, pose_device = prepare_runtime(BACKEND, DEVICE)
+    # 長いYOLO処理を始める前に、姿勢推定のCUDA初期化も確認します。
+    rtmlib_initialization_started_at = perf_counter()
+    pose_model = create_pose_model(pose_device)
+    rtmlib_initialization_seconds = perf_counter() - rtmlib_initialization_started_at
     input_video = find_input_video()
     output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
     output_video = output_directory / OUTPUT_VIDEO_NAME
@@ -1023,17 +1247,16 @@ def run_analysis() -> None:
         metadata_fps,
     )
 
+    yolo_started_at = perf_counter()
     _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
         input_video,
         output_yolo_video,
         metadata_total_frames,
+        device=yolo_device,
     )
-    pose_model = Body(
-        mode=MODEL_MODE,
-        backend=BACKEND,
-        device=DEVICE,
-    )
+    yolo_elapsed_seconds = perf_counter() - yolo_started_at
 
+    rtmlib_started_at = perf_counter()
     capture = cv2.VideoCapture(str(input_video))
     writer = cv2.VideoWriter(
         str(output_video),
@@ -1142,6 +1365,7 @@ def run_analysis() -> None:
             capture.release()
             writer.release()
 
+    rtmlib_elapsed_seconds = rtmlib_initialization_seconds + perf_counter() - rtmlib_started_at
     print("PROGRESS:100:RTMLIB", flush=True)
 
     print(f"Finished: {frame_count} frames")
@@ -1151,6 +1375,12 @@ def run_analysis() -> None:
     print(f"Metadata: {output_metadata.resolve()}")
     print(f"Target boxes: {target_box_count}/{frame_count}")
     print(f"rtmlib calls: {pose_call_count}, accepted: {pose_success_count}")
+    yolo_analysis_fps = len(target_boxes) / yolo_elapsed_seconds if yolo_elapsed_seconds > 0 else 0.0
+    rtmlib_analysis_fps = frame_count / rtmlib_elapsed_seconds if rtmlib_elapsed_seconds > 0 else 0.0
+    print(f"YOLO分析時間: {yolo_elapsed_seconds:.2f} 秒", flush=True)
+    print(f"YOLO分析速度: {yolo_analysis_fps:.2f} フレーム/秒", flush=True)
+    print(f"RTMLIB分析時間: {rtmlib_elapsed_seconds:.2f} 秒", flush=True)
+    print(f"RTMLIB分析速度: {rtmlib_analysis_fps:.2f} フレーム/秒", flush=True)
 
 
 class PoseGui(tk.Tk):
@@ -1296,6 +1526,12 @@ class PoseGui(tk.Tk):
                 if value not in CHOICES[key]:
                     raise ValueError("姿勢推定モデルを選択してください。")
                 settings[key] = value
+            elif key in {
+                "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE", "RTMLIB_PERSON_DETECTOR"
+            }:
+                if value not in CHOICES[key]:
+                    raise ValueError(f"{LABELS[key]} の値を選択してください。")
+                settings[key] = value
             elif key in PATH_KEYS or key in FILE_KEYS or key in {"YOLO_TRACKER", "MODEL_MODE", "BACKEND", "DEVICE"} or key.startswith("OUTPUT_"):
                 settings[key] = value
             elif key == "YOLO_TRACK_ID":
@@ -1320,6 +1556,12 @@ class PoseGui(tk.Tk):
             "OUTPUT_FOLDER_NAME": output_directory.name,
         })
         settings.update(output_names(output_directory))
+        resolve_rtmlib_selection(
+            settings["MODEL_MODE"],
+            settings["RTMLIB_POSE_MODEL"],
+            settings["RTMLIB_POSE_INPUT_SIZE"],
+            settings["RTMLIB_PERSON_DETECTOR"],
+        )
         return settings
 
     def _save(self, show_message=True):
@@ -1374,7 +1616,7 @@ class PoseGui(tk.Tk):
 
     def _run_process(self, config):
         try:
-            self.process = subprocess.Popen([sys.executable, str(BASE_DIR / "gui.py"), "--analysis-worker", "--config", str(config)],
+            self.process = subprocess.Popen([sys.executable, "-u", "-X", "utf8", str(BASE_DIR / "gui.py"), "--analysis-worker", "--config", str(config)],
                 cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
             if self.cancel_requested:
                 self.process.terminate()
