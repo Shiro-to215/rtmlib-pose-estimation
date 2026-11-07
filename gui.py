@@ -13,6 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from time import perf_counter
+from reservation_ui import ReservationMixin
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = BASE_DIR / "gui_settings.json"
@@ -1383,7 +1384,7 @@ def run_analysis() -> None:
     print(f"RTMLIB分析速度: {rtmlib_analysis_fps:.2f} フレーム/秒", flush=True)
 
 
-class PoseGui(tk.Tk):
+class PoseGui(ReservationMixin, tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("動画姿勢推定")
@@ -1407,13 +1408,37 @@ class PoseGui(tk.Tk):
         self.process = None
         self.cancel_requested = False
         self.log_queue = queue.Queue()
+        self._init_reservations(BASE_DIR, output_names)
         self._build()
 
     def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
         top = ttk.Frame(self, padding=(12, 10))
-        top.pack(fill="x")
-        ttk.Label(top, text="入力動画、出力先、推定・追跡の設定を指定して実行します。", wraplength=850).pack(anchor="w")
-        container = ttk.Frame(self)
+        top.grid(row=0, column=0, sticky="ew")
+        ttk.Label(top, text="動画を予約に追加し、解析開始で登録順に自動実行します。解析条件は「解析設定」で変更できます。", wraplength=1000).pack(anchor="w")
+        actions = ttk.LabelFrame(self, text="解析進捗", padding=(10, 6))
+        actions.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        actions.columnconfigure(0, weight=1)
+        self.status = ttk.Label(actions, text="待機中", width=1, wraplength=500)
+        self.status.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.progress_value = tk.IntVar(value=0)
+        self.progress_bar = ttk.Progressbar(actions, maximum=100, variable=self.progress_value, length=260)
+        self.progress_bar.grid(row=0, column=1, sticky="e")
+        self.progress_label = ttk.Label(actions, text="0%", width=6, anchor="e")
+        self.progress_label.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        actions.bind("<Configure>", lambda event: self.status.configure(wraplength=max(160, event.width - 340)))
+        self.tabs = ttk.Notebook(self)
+        self.tabs.grid(row=2, column=0, sticky="nsew", padx=12)
+        self.queue_tab = ttk.Frame(self.tabs)
+        self.settings_tab = ttk.Frame(self.tabs)
+        self.tabs.add(self.queue_tab, text="予約")
+        self.tabs.add(self.settings_tab, text="解析設定")
+        settings_actions = ttk.Frame(self.settings_tab, padding=(12, 6))
+        settings_actions.pack(fill="x")
+        ttk.Button(settings_actions, text="設定を保存", command=self._save).pack(side="right", padx=(6, 0))
+        ttk.Button(settings_actions, text="初期設定に戻す", command=self._reset).pack(side="right")
+        container = ttk.Frame(self.settings_tab)
         container.pack(fill="both", expand=True, padx=12)
         canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
@@ -1460,29 +1485,16 @@ class PoseGui(tk.Tk):
                         row=row + 1, column=1, columnspan=2, sticky="w", pady=(4, 2)
                     )
                     self._update_output_preview()
-        actions = ttk.Frame(self, padding=12)
-        actions.pack(fill="x")
-        self.status = ttk.Label(actions, text="待機中")
-        self.status.pack(side="left", fill="x", expand=True)
-        self.progress_value = tk.IntVar(value=0)
-        self.progress_label = ttk.Label(actions, text="0%")
-        self.progress_label.pack(side="right", padx=(6, 12))
-        self.progress_bar = ttk.Progressbar(actions, maximum=100, variable=self.progress_value, length=220)
-        self.progress_bar.pack(side="right", padx=(6, 0))
-        ttk.Button(actions, text="初期設定に戻す", command=self._reset).pack(side="right", padx=(6, 0))
-        ttk.Button(actions, text="設定を保存", command=self._save).pack(side="right", padx=(6, 0))
-        self.cancel_button = ttk.Button(actions, text="解析を中断", command=self._cancel, state="disabled")
-        self.cancel_button.pack(side="right", padx=(6, 0))
-        self.start_button = ttk.Button(actions, text="解析を開始", command=self._start)
-        self.start_button.pack(side="right")
+        self._build_reservations(self.queue_tab)
         log_frame = ttk.LabelFrame(self, text="実行ログ", padding=8)
-        log_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self.log = tk.Text(log_frame, height=9, wrap="word", state="disabled")
+        log_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self.log = tk.Text(log_frame, height=4, wrap="word", state="disabled")
         log_scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
         self.log.configure(yscrollcommand=log_scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
-        self.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
+                  if str(e.widget).startswith(str(self.form)) else None)
 
     @staticmethod
     def _format(value):
@@ -1586,47 +1598,10 @@ class PoseGui(tk.Tk):
         self.status.configure(text="現在の設定を初期値に戻しました")
 
     def _start(self):
-        settings = self._save(show_message=False)
-        if settings is None:
-            return
-        if not settings["INPUT_VIDEO_NAME"]:
-            messagebox.showerror("入力エラー", "入力動画を指定してください。")
-            return
-        video = Path(settings["INPUT_ROOT"]).expanduser() / settings["INPUT_VIDEO_NAME"]
-        if not video.is_file():
-            messagebox.showerror("入力エラー", f"入力動画が見つかりません。\n{video}")
-            return
-        config = SETTINGS_FILE
-        self.cancel_requested = False
-        self.process = None
-        self.progress_value.set(0)
-        self.progress_label.configure(text="0%")
-        self.start_button.configure(state="disabled")
-        self.cancel_button.configure(state="normal")
-        self.status.configure(text="解析を実行中…")
-        self._append(f"設定を保存しました: {config}\n解析を開始します: {video}\n")
-        threading.Thread(target=self._run_process, args=(config,), daemon=True).start()
+        self._queue_start()
 
     def _cancel(self):
-        self.cancel_requested = True
-        self.cancel_button.configure(state="disabled")
-        self.status.configure(text="解析を中断しています…")
-        if self.process is not None and self.process.poll() is None:
-            self.process.terminate()
-
-    def _run_process(self, config):
-        try:
-            self.process = subprocess.Popen([sys.executable, "-u", "-X", "utf8", str(BASE_DIR / "gui.py"), "--analysis-worker", "--config", str(config)],
-                cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
-            if self.cancel_requested:
-                self.process.terminate()
-            for line in self.process.stdout:
-                self.log_queue.put(line)
-            code = self.process.wait()
-            self.log_queue.put(("__FINISHED__", code))
-        except Exception as exc:
-            self.log_queue.put(f"起動エラー: {exc}\n")
-            self.log_queue.put(("__FINISHED__", -1))
+        self._queue_cancel()
 
     def _append(self, text):
         self.log.configure(state="normal")
@@ -1635,33 +1610,7 @@ class PoseGui(tk.Tk):
         self.log.configure(state="disabled")
 
     def _poll(self):
-        try:
-            while True:
-                item = self.log_queue.get_nowait()
-                if isinstance(item, tuple) and item[0] == "__FINISHED__":
-                    self.start_button.configure(state="normal")
-                    self.cancel_button.configure(state="disabled")
-                    if self.cancel_requested:
-                        self.status.configure(text="解析を中断しました")
-                    else:
-                        self.status.configure(text="解析が完了しました" if item[1] == 0 else f"解析が終了しました（終了コード {item[1]}）")
-                    if item[1] == 0:
-                        self.progress_value.set(100)
-                        self.progress_label.configure(text="100%")
-                    self._append(f"\n--- 終了コード: {item[1]} ---\n")
-                elif isinstance(item, str) and item.startswith("PROGRESS:"):
-                    try:
-                        percent, phase = item.strip().split(":", 2)[1:]
-                        self.progress_value.set(int(percent))
-                        self.progress_label.configure(text=f"{int(percent)}%")
-                        self.status.configure(text="YOLO処理中…" if phase == "YOLO" else "RTMLIB処理中…")
-                    except (ValueError, IndexError):
-                        self._append(item)
-                else:
-                    self._append(item)
-        except queue.Empty:
-            pass
-        self.after(150, self._poll)
+        self._queue_poll()
 
 
 def run_analysis_worker(config_path: Path) -> None:
@@ -1696,5 +1645,5 @@ if __name__ == "__main__":
         run_analysis_worker(args.config)
     else:
         app = PoseGui()
-        app.after(150, app._poll)
+        app._poll_token = app.after(150, app._poll)
         app.mainloop()

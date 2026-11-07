@@ -5,4 +5,8 @@ __pycache__/
 *.avi
 *.mov
 gui_settings.json
+analysis_queue.json
+.analysis_jobs/
+test/
+tests/
 yolo11*.pt
