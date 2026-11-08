@@ -5,15 +5,10 @@ import csv
 from datetime import datetime
 import json
 import math
-import queue
 import subprocess
 import sys
-import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 from time import perf_counter
-from reservation_ui import ReservationMixin
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = BASE_DIR / "gui_settings.json"
@@ -1384,235 +1379,6 @@ def run_analysis() -> None:
     print(f"RTMLIB分析速度: {rtmlib_analysis_fps:.2f} フレーム/秒", flush=True)
 
 
-class PoseGui(ReservationMixin, tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("動画姿勢推定")
-        self.geometry("1150x820")
-        self.minsize(900, 600)
-        self.values = dict(DEFAULTS)
-        if SETTINGS_FILE.exists():
-            try:
-                saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-                self.values.update({key: value for key, value in saved.items() if key in DEFAULTS})
-                # 旧GUIの保存設定（親フォルダとファイル名）も新しいファイル選択欄へ引き継ぎます。
-                if "INPUT_VIDEO_FILE" not in saved and "INPUT_ROOT" in saved:
-                    self.values["INPUT_VIDEO_FILE"] = str(Path(saved["INPUT_ROOT"]) / saved.get("INPUT_VIDEO_NAME", ""))
-                if "THUMBNAIL_FILE" not in saved and "THUMBNAIL_ROOT" in saved:
-                    self.values["THUMBNAIL_FILE"] = str(Path(saved["THUMBNAIL_ROOT"]) / saved.get("THUMBNAIL_IMAGE_NAME", ""))
-                if "OUTPUT_DIRECTORY" not in saved and "OUTPUT_ROOT" in saved:
-                    self.values["OUTPUT_DIRECTORY"] = str(Path(saved["OUTPUT_ROOT"]) / saved.get("OUTPUT_FOLDER_NAME", ""))
-            except (OSError, json.JSONDecodeError) as exc:
-                messagebox.showwarning("設定ファイル", f"保存済み設定を読み込めませんでした。初期設定で起動します。\n{exc}")
-        self.vars = {}
-        self.process = None
-        self.cancel_requested = False
-        self.log_queue = queue.Queue()
-        self._init_reservations(BASE_DIR, output_names)
-        self._build()
-
-    def _build(self):
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
-        top = ttk.Frame(self, padding=(12, 10))
-        top.grid(row=0, column=0, sticky="ew")
-        ttk.Label(top, text="動画を予約に追加し、解析開始で登録順に自動実行します。解析条件は「解析設定」で変更できます。", wraplength=1000).pack(anchor="w")
-        actions = ttk.LabelFrame(self, text="解析進捗", padding=(10, 6))
-        actions.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-        actions.columnconfigure(0, weight=1)
-        self.status = ttk.Label(actions, text="待機中", width=1, wraplength=500)
-        self.status.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.progress_value = tk.IntVar(value=0)
-        self.progress_bar = ttk.Progressbar(actions, maximum=100, variable=self.progress_value, length=260)
-        self.progress_bar.grid(row=0, column=1, sticky="e")
-        self.progress_label = ttk.Label(actions, text="0%", width=6, anchor="e")
-        self.progress_label.grid(row=0, column=2, sticky="e", padx=(6, 0))
-        actions.bind("<Configure>", lambda event: self.status.configure(wraplength=max(160, event.width - 340)))
-        self.tabs = ttk.Notebook(self)
-        self.tabs.grid(row=2, column=0, sticky="nsew", padx=12)
-        self.queue_tab = ttk.Frame(self.tabs)
-        self.settings_tab = ttk.Frame(self.tabs)
-        self.tabs.add(self.queue_tab, text="予約")
-        self.tabs.add(self.settings_tab, text="解析設定")
-        settings_actions = ttk.Frame(self.settings_tab, padding=(12, 6))
-        settings_actions.pack(fill="x")
-        ttk.Button(settings_actions, text="設定を保存", command=self._save).pack(side="right", padx=(6, 0))
-        ttk.Button(settings_actions, text="初期設定に戻す", command=self._reset).pack(side="right")
-        container = ttk.Frame(self.settings_tab)
-        container.pack(fill="both", expand=True, padx=12)
-        canvas = tk.Canvas(container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        self.form = ttk.Frame(canvas, padding=(4, 4, 12, 12))
-        self.output_preview = tk.StringVar()
-        self.form.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        form_window = canvas.create_window((0, 0), window=self.form, anchor="nw")
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(form_window, width=event.width))
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        for title, keys in GROUPS:
-            group = ttk.LabelFrame(self.form, text=title, padding=10)
-            group.pack(fill="x", pady=(0, 10))
-            group.columnconfigure(1, weight=1)
-            for row, key in enumerate(keys):
-                ttk.Label(group, text=LABELS.get(key, key)).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
-                if key in BOOL_KEYS:
-                    variable = tk.BooleanVar(value=self.values[key])
-                    widget = ttk.Checkbutton(group, variable=variable)
-                    widget.grid(row=row, column=1, sticky="w", pady=3)
-                elif key in CHOICES:
-                    current = str(self.values[key])
-                    if key == "YOLO_MODEL":
-                        current = current.removeprefix("yolo11").removesuffix(".pt")
-                    variable = tk.StringVar(value=current)
-                    widget = ttk.Combobox(group, textvariable=variable, values=CHOICES[key], state="readonly", width=8)
-                    widget.grid(row=row, column=1, sticky="w", pady=3)
-                else:
-                    value = self.values[key]
-                    if key == "YOLO_TRACK_ID" and value is None:
-                        value = ""
-                    variable = tk.StringVar(value=self._format(value))
-                    widget = ttk.Entry(group, textvariable=variable)
-                    widget.grid(row=row, column=1, sticky="ew", pady=3)
-                    if key in PATH_KEYS:
-                        ttk.Button(group, text="参照…", command=lambda k=key: self._choose_dir(k)).grid(row=row, column=2, padx=(6, 0))
-                    elif key in FILE_KEYS:
-                        ttk.Button(group, text="参照…", command=lambda k=key: self._choose_file(k)).grid(row=row, column=2, padx=(6, 0))
-                self.vars[key] = variable
-                if key == "OUTPUT_DIRECTORY":
-                    variable.trace_add("write", self._update_output_preview)
-                    ttk.Label(group, textvariable=self.output_preview, wraplength=850).grid(
-                        row=row + 1, column=1, columnspan=2, sticky="w", pady=(4, 2)
-                    )
-                    self._update_output_preview()
-        self._build_reservations(self.queue_tab)
-        log_frame = ttk.LabelFrame(self, text="実行ログ", padding=8)
-        log_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
-        self.log = tk.Text(log_frame, height=4, wrap="word", state="disabled")
-        log_scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
-        self.log.configure(yscrollcommand=log_scroll.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        log_scroll.pack(side="right", fill="y")
-        self.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
-                  if str(e.widget).startswith(str(self.form)) else None)
-
-    @staticmethod
-    def _format(value):
-        if isinstance(value, list):
-            return ", ".join(map(str, value))
-        return str(value)
-
-    def _choose_dir(self, key):
-        selected = filedialog.askdirectory(initialdir=self.vars[key].get() or str(HOME))
-        if selected:
-            self.vars[key].set(selected)
-
-    def _update_output_preview(self, *_args):
-        try:
-            names = output_names(Path(self.vars["OUTPUT_DIRECTORY"].get().strip()))
-            self.output_preview.set("生成ファイル: " + " / ".join(names.values()))
-        except ValueError:
-            self.output_preview.set("出力先フォルダ名からファイル名を自動生成します")
-
-    def _choose_file(self, key):
-        is_video = key == "INPUT_VIDEO_FILE"
-        initial = self.vars[key].get() or str(HOME)
-        initial_path = Path(initial).expanduser()
-        selected = filedialog.askopenfilename(initialdir=str(initial_path.parent),
-            filetypes=[("動画ファイル", "*.mp4 *.MP4 *.mov *.MOV *.avi *.mkv") , ("画像ファイル", "*.jpg *.JPG *.jpeg *.png")] if not is_video else [("動画ファイル", "*.mp4 *.MP4 *.mov *.MOV *.avi *.mkv"), ("すべてのファイル", "*.*")])
-        if selected:
-            self.vars[key].set(str(Path(selected).expanduser()))
-
-    def _collect(self):
-        settings = {}
-        for key, variable in self.vars.items():
-            if key in BOOL_KEYS:
-                settings[key] = bool(variable.get())
-                continue
-            value = variable.get().strip()
-            if key == "YOLO_MODEL":
-                if value not in CHOICES[key]:
-                    raise ValueError("YOLOモデルサイズは n / s / m / l / x から選択してください。")
-                settings[key] = f"yolo11{value}.pt"
-            elif key == "MODEL_MODE":
-                if value not in CHOICES[key]:
-                    raise ValueError("姿勢推定モデルを選択してください。")
-                settings[key] = value
-            elif key in {
-                "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE", "RTMLIB_PERSON_DETECTOR"
-            }:
-                if value not in CHOICES[key]:
-                    raise ValueError(f"{LABELS[key]} の値を選択してください。")
-                settings[key] = value
-            elif key in PATH_KEYS or key in FILE_KEYS or key in {"YOLO_TRACKER", "MODEL_MODE", "BACKEND", "DEVICE"} or key.startswith("OUTPUT_"):
-                settings[key] = value
-            elif key == "YOLO_TRACK_ID":
-                settings[key] = None if not value else int(value)
-            elif key == "YOLO_CLASSES":
-                settings[key] = [int(part.strip()) for part in value.split(",") if part.strip()]
-            elif key in INT_KEYS:
-                settings[key] = int(value)
-            elif key in FLOAT_KEYS:
-                settings[key] = float(value)
-            else:
-                settings[key] = value
-        video_path = Path(settings.pop("INPUT_VIDEO_FILE")).expanduser()
-        thumbnail_value = settings.pop("THUMBNAIL_FILE").strip()
-        output_directory = Path(settings.pop("OUTPUT_DIRECTORY")).expanduser()
-        settings.update({
-            "INPUT_ROOT": str(video_path.parent),
-            "INPUT_VIDEO_NAME": video_path.name,
-            "THUMBNAIL_ROOT": str(Path(thumbnail_value).parent) if thumbnail_value else "",
-            "THUMBNAIL_IMAGE_NAME": Path(thumbnail_value).name if thumbnail_value else "",
-            "OUTPUT_ROOT": str(output_directory.parent),
-            "OUTPUT_FOLDER_NAME": output_directory.name,
-        })
-        settings.update(output_names(output_directory))
-        resolve_rtmlib_selection(
-            settings["MODEL_MODE"],
-            settings["RTMLIB_POSE_MODEL"],
-            settings["RTMLIB_POSE_INPUT_SIZE"],
-            settings["RTMLIB_PERSON_DETECTOR"],
-        )
-        return settings
-
-    def _save(self, show_message=True):
-        try:
-            settings = self._collect()
-            SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            if show_message:
-                self.status.configure(text=f"設定を保存しました: {SETTINGS_FILE.name}")
-            return settings
-        except (ValueError, OSError) as exc:
-            messagebox.showerror("設定エラー", f"設定値を確認してください。\n{exc}")
-            return None
-
-    def _reset(self):
-        for key, variable in self.vars.items():
-            if key in BOOL_KEYS:
-                variable.set(DEFAULTS[key])
-            else:
-                value = "" if key == "YOLO_TRACK_ID" else self._format(DEFAULTS[key])
-                variable.set(value)
-        self._save(show_message=False)
-        self.status.configure(text="現在の設定を初期値に戻しました")
-
-    def _start(self):
-        self._queue_start()
-
-    def _cancel(self):
-        self._queue_cancel()
-
-    def _append(self, text):
-        self.log.configure(state="normal")
-        self.log.insert("end", text)
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    def _poll(self):
-        self._queue_poll()
-
-
 def run_analysis_worker(config_path: Path) -> None:
     """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
     import importlib
@@ -1634,6 +1400,44 @@ def run_analysis_worker(config_path: Path) -> None:
     run_analysis()
 
 
+def _start_gui() -> None:
+    try:
+        from pose_ui import launch_gui
+    except ImportError as exc:
+        msg = (
+            f"GUI表示に必要なパッケージが見つかりません ({exc})。\n\n"
+            "新規環境では:\n"
+            "  python -m pip install -r requirements.txt\n\n"
+            "既存のGPU環境（.venv）に追加する場合は:\n"
+            "  python -m pip install customtkinter tkinterdnd2 Pillow\n"
+            "を実行してください。"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("必要なパッケージが不足しています", msg)
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(1)
+
+    launch_gui(
+        base_dir=BASE_DIR,
+        settings_file=SETTINGS_FILE,
+        engine_defaults=ENGINE_DEFAULTS,
+        choices=CHOICES,
+        bool_keys=BOOL_KEYS,
+        int_keys=INT_KEYS,
+        float_keys=FLOAT_KEYS,
+        resolve_rtmlib_fn=resolve_rtmlib_selection,
+        output_names_fn=output_names,
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="動画姿勢推定 GUI / 解析ワーカー")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
@@ -1644,6 +1448,4 @@ if __name__ == "__main__":
             parser.error("解析ワーカーには --config が必要です")
         run_analysis_worker(args.config)
     else:
-        app = PoseGui()
-        app._poll_token = app.after(150, app._poll)
-        app.mainloop()
+        _start_gui()

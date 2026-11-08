@@ -8,10 +8,12 @@ import json
 from functools import wraps
 import os
 from pathlib import Path
+import re
 import tempfile
 import uuid
 
 STATES = {'pending', 'running', 'done', 'failed'}
+_NUMERIC_SUFFIX_RE = re.compile(r'^(.+)_(\d+)$')
 
 
 def transactional(method):
@@ -120,38 +122,88 @@ class ReservationQueue:
                 self.jobs.pop(job_index)
                 self.jobs.insert(first_index, job)
 
-    def available_output(self, video, root, exclude_id=None):
-        root = Path(root).expanduser().resolve()
-        reserved = {str(job.output.resolve()).casefold() for job in self.jobs if job.id != exclude_id}
-        stem = Path(video).stem or 'video'
-        number = 1
+    def ensure_available_destination(self, destination, exclude_id=None):
+        destination = Path(destination).expanduser().resolve()
+        if not destination.name:
+            raise ValueError('出力先フォルダを指定してください。')
+        parent = destination.parent
+        reserved = {
+            str(job.output.resolve()).casefold()
+            for job in self.jobs
+            if job.id != exclude_id and job.state != 'done'
+        }
+        if not destination.exists() and str(destination).casefold() not in reserved:
+            return destination
+        match = _NUMERIC_SUFFIX_RE.match(destination.name)
+        if match:
+            base_name = match.group(1)
+            number = max(2, int(match.group(2)) + 1)
+        else:
+            base_name = destination.name
+            number = 2
         while True:
-            candidate = root / (stem if number == 1 else f'{stem}_{number}')
+            candidate = parent / f'{base_name}_{number}'
             if not candidate.exists() and str(candidate).casefold() not in reserved:
                 return candidate
             number += 1
 
+    def available_output(self, video, root, exclude_id=None):
+        root = Path(root).expanduser().resolve()
+        stem = Path(video).stem or 'video'
+        return self.ensure_available_destination(root / stem, exclude_id=exclude_id)
+
     @transactional
-    def add(self, videos, template, root, output_names, thumbnail=None):
+    def add(self, videos, template, root, output_names, thumbnail=None, custom_destination=None):
         videos = [Path(video).expanduser().resolve() for video in videos]
         for video in videos:
             if not video.is_file():
                 raise ValueError(f'入力動画が見つかりません。\n{video}')
         created = []
-        for video in videos:
+        for index, video in enumerate(videos):
             settings = deepcopy(template)
             settings.update(INPUT_ROOT=str(video.parent), INPUT_VIDEO_NAME=video.name,
                             THUMBNAIL_ROOT='', THUMBNAIL_IMAGE_NAME='')
-            if thumbnail:
-                settings['THUMBNAIL_ROOT'] = str(Path(thumbnail).parent)
-                settings['THUMBNAIL_IMAGE_NAME'] = Path(thumbnail).name
-            set_output(settings, self.available_output(video, root), output_names)
+            if thumbnail and len(videos) == 1:
+                thumb_path = Path(thumbnail).expanduser().resolve()
+                settings['THUMBNAIL_ROOT'] = str(thumb_path.parent)
+                settings['THUMBNAIL_IMAGE_NAME'] = thumb_path.name
+            if custom_destination is not None and len(videos) == 1 and index == 0:
+                dest = self.ensure_available_destination(custom_destination)
+            else:
+                dest = self.available_output(video, root)
+            set_output(settings, dest, output_names)
             job = Reservation(settings=settings)
             self.jobs.append(job)
             created.append(job)
-        self.output_root = str(Path(root).expanduser().resolve())
+        if root:
+            self.output_root = str(Path(root).expanduser().resolve())
         self.save()
         return created
+
+    @transactional
+    def update_job(self, job_id, settings, destination, output_names, reset_failed=False):
+        job = self.find(job_id)
+        if job is None:
+            raise ValueError('対象の予約が見つかりません。')
+        if job.state in {'running', 'done'}:
+            raise ValueError('解析中または完了済みの予約は設定を変更できません。')
+        dest = Path(destination).expanduser().resolve()
+        if not dest.name:
+            raise ValueError('出力先フォルダを指定してください。')
+        reserved = {
+            str(other.output.resolve()).casefold()
+            for other in self.jobs
+            if other.id != job_id and other.state != 'done'
+        }
+        if str(dest).casefold() in reserved:
+            raise ValueError('指定された出力先フォルダは他の予約で既に使用されています。別のフォルダ名を指定してください。')
+        new_settings = deepcopy(settings)
+        set_output(new_settings, dest, output_names)
+        job.settings = new_settings
+        if reset_failed and job.state == 'failed':
+            job.state, job.error = 'pending', ''
+        self.save()
+        return job
 
     @transactional
     def remove(self, ids):
@@ -163,12 +215,12 @@ class ReservationQueue:
         if delta not in (-1, 1):
             raise ValueError('移動方向は上または下を指定してください。')
         job = self.find(job_id)
-        if job is None or job.state != 'pending':
+        if job is None or job.state not in {'pending', 'failed'}:
             return
         index = self.jobs.index(job)
         other = index + delta
         while 0 <= other < len(self.jobs):
-            if self.jobs[other].state == 'pending':
+            if self.jobs[other].state in {'pending', 'failed'}:
                 self.jobs[index], self.jobs[other] = self.jobs[other], self.jobs[index]
                 self.save()
                 return
@@ -178,7 +230,6 @@ class ReservationQueue:
     def retry(self, ids, output_names):
         for job in self.jobs:
             if job.id in ids and job.state not in {'pending', 'running'}:
-                root = job.output.parent
-                set_output(job.settings, self.available_output(job.video, root, job.id), output_names)
+                set_output(job.settings, self.ensure_available_destination(job.output, job.id), output_names)
                 job.state, job.error = 'pending', ''
         self.save()
