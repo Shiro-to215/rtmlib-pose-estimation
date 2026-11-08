@@ -12,8 +12,10 @@ from PIL import Image, ImageTk
 from reservation_queue import Reservation
 from . import theme as t
 
-THUMB_W = 112
-THUMB_H = 63
+THUMB_W = 160
+THUMB_H = 90
+COL0_MINSIZE = 216
+COL1_MINSIZE = 108
 
 
 class DashedAddZone(tk.Canvas):
@@ -27,7 +29,7 @@ class DashedAddZone(tk.Canvas):
     ) -> None:
         super().__init__(
             master,
-            height=68,
+            height=80,
             bg=t.BG_PANEL,
             highlightthickness=0,
             bd=0,
@@ -57,9 +59,9 @@ class DashedAddZone(tk.Canvas):
     def _draw(self) -> None:
         self.delete("all")
         w = max(220, self.winfo_width())
-        h = max(56, self.winfo_height())
+        h = max(64, self.winfo_height())
         # Keep centered rounded dashed box slightly inset like the sketch
-        margin_x = max(16, int(w * 0.08))
+        margin_x = max(16, int(w * 0.04))
         x1, y1 = margin_x, 6
         x2, y2 = w - margin_x, h - 6
         r = 12
@@ -184,22 +186,22 @@ class QueueListView(ctk.CTkFrame):
         actions.grid(row=0, column=1, sticky="e")
 
         self.delete_btn = t.make_button(
-            actions, "削除", self._handle_delete, kind="danger", width=72, height=34
+            actions, "削除", self._handle_delete, kind="danger", width=80, height=38
         )
-        self.delete_btn.pack(side="left", padx=(0, 6))
+        self.delete_btn.pack(side="left", padx=(0, 8))
 
         self.up_btn = t.make_button(
-            actions, "上へ", lambda: self._handle_move(-1), kind="outline", width=68, height=34
+            actions, "上へ", lambda: self._handle_move(-1), kind="outline", width=76, height=38
         )
-        self.up_btn.pack(side="left", padx=(0, 6))
+        self.up_btn.pack(side="left", padx=(0, 8))
 
         self.down_btn = t.make_button(
-            actions, "下へ", lambda: self._handle_move(1), kind="outline", width=68, height=34
+            actions, "下へ", lambda: self._handle_move(1), kind="outline", width=76, height=38
         )
         self.down_btn.pack(side="left", padx=(0, 12))
 
         self.basic_settings_btn = t.make_button(
-            actions, "基本設定", self._on_open_basic_settings, kind="tonal", width=96, height=34
+            actions, "基本設定", self._on_open_basic_settings, kind="tonal", width=106, height=38
         )
         self.basic_settings_btn.pack(side="left")
 
@@ -210,21 +212,23 @@ class QueueListView(ctk.CTkFrame):
             corner_radius=6,
             border_width=1,
             border_color=t.BORDER,
-            height=32,
+            height=34,
         )
         col_bar.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 6))
         col_bar.grid_propagate(False)
+        col_bar.columnconfigure(0, minsize=COL0_MINSIZE)
+        col_bar.columnconfigure(1, minsize=COL1_MINSIZE)
         col_bar.columnconfigure(2, weight=1)
 
         ctk.CTkLabel(
-            col_bar, text="順番 / プレビュー", font=f.small_bold, text_color=t.TEXT_SECONDARY, width=152, anchor="w"
-        ).grid(row=0, column=0, padx=(12, 6), pady=4, sticky="w")
+            col_bar, text="順番 / プレビュー", font=f.small_bold, text_color=t.TEXT_SECONDARY, anchor="w"
+        ).grid(row=0, column=0, padx=(16, 8), pady=5, sticky="w")
         ctk.CTkLabel(
-            col_bar, text="設定", font=f.small_bold, text_color=t.TEXT_SECONDARY, width=76, anchor="center"
-        ).grid(row=0, column=1, padx=6, pady=4)
+            col_bar, text="設定", font=f.small_bold, text_color=t.TEXT_SECONDARY, anchor="center"
+        ).grid(row=0, column=1, padx=8, pady=5)
         ctk.CTkLabel(
             col_bar, text="動画名 / 出力フォルダー", font=f.small_bold, text_color=t.TEXT_SECONDARY, anchor="w"
-        ).grid(row=0, column=2, padx=(10, 12), pady=4, sticky="w")
+        ).grid(row=0, column=2, padx=(12, 16), pady=5, sticky="w")
 
         # Row 2: Scrollable list area + dashed add button inside
         self.scroll = t.SmoothScrollFrame(self, bg=t.BG_PANEL)
@@ -278,8 +282,6 @@ class QueueListView(ctk.CTkFrame):
         parts = [f"待機 {counts['pending']}件"]
         if counts["failed"]:
             parts.append(f"失敗 {counts['failed']}件")
-        if counts["done"]:
-            parts.append(f"完了済 {counts['done']}件")
         self.summary_badge.configure(text="  " + " ・ ".join(parts) + "  ")
 
         for child in self.rows_holder.winfo_children():
@@ -326,22 +328,24 @@ class QueueListView(ctk.CTkFrame):
             border_color=base_border,
         )
         card._job_failed = is_failed  # type: ignore[attr-defined]
+        card.columnconfigure(0, minsize=COL0_MINSIZE)
+        card.columnconfigure(1, minsize=COL1_MINSIZE)
         card.columnconfigure(2, weight=1)
 
         # Column 0: Order number + Thumbnail preview
         left_cell = tk.Frame(card, bg=base_bg)
-        left_cell.grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+        left_cell.grid(row=0, column=0, padx=(14, 8), pady=10, sticky="w")
         card._bg_frames = [left_cell]  # type: ignore[attr-defined]
 
         num_lbl = tk.Label(
             left_cell,
             text=f"{order_num}",
-            font=(f.family, 11, "bold"),
+            font=(f.family, 13, "bold"),
             fg=t.DANGER if is_failed else t.TEXT_SECONDARY,
             bg=base_bg,
             width=3,
         )
-        num_lbl.pack(side="left", padx=(0, 6))
+        num_lbl.pack(side="left", padx=(0, 8))
         card._bg_frames.append(num_lbl)  # type: ignore[attr-defined]
 
         thumb_border = tk.Frame(left_cell, bg=t.BORDER_STRONG, padx=1, pady=1)
@@ -355,14 +359,15 @@ class QueueListView(ctk.CTkFrame):
             "設定",
             command=lambda jid=job.id: self._on_open_job_settings(jid),
             kind="outline",
-            width=72,
-            height=36,
+            width=92,
+            height=42,
+            large=True,
         )
-        settings_btn.grid(row=0, column=1, padx=8, pady=8)
+        settings_btn.grid(row=0, column=1, padx=8, pady=10)
 
         # Column 2: Video name + Output folder + Optional failed retry controls
         info_cell = tk.Frame(card, bg=base_bg)
-        info_cell.grid(row=0, column=2, padx=(8, 12), pady=8, sticky="ew")
+        info_cell.grid(row=0, column=2, padx=(10, 18), pady=10, sticky="ew")
         info_cell.columnconfigure(0, weight=1)
         card._bg_frames.append(info_cell)  # type: ignore[attr-defined]
 
@@ -374,7 +379,7 @@ class QueueListView(ctk.CTkFrame):
         name_lbl = tk.Label(
             top_line,
             text=job.video.name,
-            font=(f.family, 12, "bold"),
+            font=(f.family, 14, "bold"),
             fg=t.TEXT_PRIMARY,
             bg=base_bg,
             anchor="w",
@@ -390,24 +395,24 @@ class QueueListView(ctk.CTkFrame):
         spec_lbl = tk.Label(
             top_line,
             text=spec_text,
-            font=(f.family, 10),
+            font=(f.family, 11),
             fg=t.TEXT_MUTED,
             bg=base_bg,
             anchor="e",
         )
-        spec_lbl.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        spec_lbl.grid(row=0, column=1, sticky="e", padx=(10, 0))
         card._bg_frames.append(spec_lbl)  # type: ignore[attr-defined]
 
         out_lbl = tk.Label(
             info_cell,
-            text=f"出力先: {_middle_shorten_path(str(job.output), 54)}",
-            font=(f.family, 10),
+            text=f"出力先: {_middle_shorten_path(str(job.output), 130)}",
+            font=(f.family, 11),
             fg=t.TEXT_SECONDARY,
             bg=base_bg,
             anchor="w",
             justify="left",
         )
-        out_lbl.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        out_lbl.grid(row=1, column=0, sticky="ew", pady=(5, 0))
         card._bg_frames.append(out_lbl)  # type: ignore[attr-defined]
 
         if is_failed:
@@ -526,7 +531,7 @@ def _fit_thumb(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
     return canvas
 
 
-def _middle_shorten_path(path_str: str, max_len: int = 54) -> str:
+def _middle_shorten_path(path_str: str, max_len: int = 88) -> str:
     if len(path_str) <= max_len:
         return path_str
     p = Path(path_str)

@@ -59,7 +59,7 @@ class CircularProgress(tk.Canvas):
             cx,
             cy + 36,
             text="",
-            font=(f.family, 9),
+            font=(f.family, 10),
             fill=t.TEXT_MUTED,
         )
         self._redraw()

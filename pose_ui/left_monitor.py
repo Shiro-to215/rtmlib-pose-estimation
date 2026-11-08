@@ -10,6 +10,7 @@ from .circular_progress import CircularProgress
 
 PREVIEW_W = 324
 PREVIEW_H = 182
+LOG_BOX_HEIGHT = 125
 
 
 class LeftMonitorPane(ctk.CTkFrame):
@@ -18,6 +19,8 @@ class LeftMonitorPane(ctk.CTkFrame):
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(
             master,
+            width=100,
+            height=100,
             fg_color=t.BG_PANEL,
             corner_radius=t.RADIUS_PANEL,
             border_width=1,
@@ -26,11 +29,16 @@ class LeftMonitorPane(ctk.CTkFrame):
         f = t.fonts()
 
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)  # Execution log expands vertically
+        # Distribute vertical space to Preview & Circular Ring; keep Execution Log compact at bottom
+        self.rowconfigure(0, weight=0)
+        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=0)
+        self.rowconfigure(3, weight=2)
+        self.rowconfigure(4, weight=0, minsize=LOG_BOX_HEIGHT)
 
         # Row 0: Header ("解析中" + state badge)
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
         header.columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -53,14 +61,14 @@ class LeftMonitorPane(ctk.CTkFrame):
         )
         self.state_badge.grid(row=0, column=1, sticky="e")
 
-        # Row 1: Video Preview Box (16:9)
+        # Row 1: Video Preview Box (16:9, original 324x182 size)
         preview_wrap = tk.Frame(
             self,
             bg=t.BORDER,
             padx=1,
             pady=1,
         )
-        preview_wrap.grid(row=1, column=0, padx=16, pady=(0, 8))
+        preview_wrap.grid(row=1, column=0, padx=14, pady=(4, 6))
 
         self.preview_canvas = tk.Canvas(
             preview_wrap,
@@ -86,7 +94,7 @@ class LeftMonitorPane(ctk.CTkFrame):
 
         # Row 2: Video Name & Output Info
         info_box = ctk.CTkFrame(self, fg_color="transparent")
-        info_box.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
+        info_box.grid(row=2, column=0, sticky="ew", padx=14, pady=(2, 4))
         info_box.columnconfigure(0, weight=1)
 
         self.video_name_label = ctk.CTkLabel(
@@ -104,25 +112,27 @@ class LeftMonitorPane(ctk.CTkFrame):
             font=f.small,
             text_color=t.TEXT_MUTED,
             anchor="center",
-            wraplength=316,
+            wraplength=320,
         )
         self.video_meta_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
-        # Row 3: Circular Progress Ring
+        # Row 3: Circular Progress Ring (original 184px diameter)
         ring_holder = ctk.CTkFrame(self, fg_color="transparent")
-        ring_holder.grid(row=3, column=0, pady=(4, 8))
-        self.ring = CircularProgress(ring_holder, diameter=178, thickness=14, bg=t.BG_PANEL)
+        ring_holder.grid(row=3, column=0, pady=(6, 8))
+        self.ring = CircularProgress(ring_holder, diameter=184, thickness=15, bg=t.BG_PANEL)
         self.ring.pack()
 
-        # Row 4: Execution Log (expands to bottom)
+        # Row 4: Compact Fixed-Height Execution Log at bottom
         log_section = ctk.CTkFrame(
             self,
+            height=LOG_BOX_HEIGHT,
             fg_color=t.LOG_BG,
             corner_radius=t.RADIUS_ITEM,
             border_width=1,
             border_color=t.LOG_BORDER,
         )
-        log_section.grid(row=4, column=0, sticky="nsew", padx=14, pady=(2, 14))
+        log_section.grid(row=4, column=0, sticky="ew", padx=14, pady=(4, 14))
+        log_section.grid_propagate(False)
         log_section.columnconfigure(0, weight=1)
         log_section.rowconfigure(1, weight=1)
 
@@ -154,7 +164,7 @@ class LeftMonitorPane(ctk.CTkFrame):
 
         self.log_text = tk.Text(
             log_section,
-            height=7,
+            height=4,
             wrap="word",
             bg=t.LOG_BG,
             fg=t.TEXT_PRIMARY,

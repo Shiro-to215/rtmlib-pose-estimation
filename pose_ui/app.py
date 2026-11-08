@@ -69,8 +69,12 @@ class PoseApp:
         self.root = root if root is not None else _create_root()
         f = t.init_theme(self.root)
         self.root.title("動画姿勢推定 — YOLO + RTMPose")
-        self.root.geometry("1240x800")
-        self.root.minsize(980, 640)
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = min(1460, max(1240, int(screen_w * 0.92)))
+        win_h = min(860, max(760, int(screen_h * 0.86)))
+        self.root.geometry(f"{win_w}x{win_h}")
+        self.root.minsize(1200, 720)
         try:
             self.root.configure(fg_color=t.BG_WINDOW)
         except tk.TclError:
@@ -110,18 +114,21 @@ class PoseApp:
         self._next_token: str | None = None
         self._active_view_name: str = "queue"
 
-        # ---- Main 2-Pane Layout ------------------------------------------
-        self.root.columnconfigure(0, weight=0, minsize=364)
-        self.root.columnconfigure(1, weight=1)
+        # ---- Main 2-Pane Layout (Strict 1 : 3 Lock Across All Views) -------
+        self.root.columnconfigure(0, weight=1, uniform="main_split")
+        self.root.columnconfigure(1, weight=3, uniform="main_split")
         self.root.rowconfigure(0, weight=1)
 
-        # Left Pane: Always-visible Analysis Monitor
+        # Left Pane: Always-visible Analysis Monitor (25% width)
         self.left_monitor = LeftMonitorPane(self.root)
+        self.left_monitor.configure(width=100, height=100)
         self.left_monitor.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=14)
+        self.left_monitor.grid_propagate(False)
 
-        # Right Column: Top Control Bar + Switchable Workspace
-        self.right_shell = ctk.CTkFrame(self.root, fg_color="transparent")
+        # Right Column: Top Control Bar + Switchable Workspace (75% width)
+        self.right_shell = ctk.CTkFrame(self.root, fg_color="transparent", width=100, height=100)
         self.right_shell.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=14)
+        self.right_shell.grid_propagate(False)
         self.right_shell.columnconfigure(0, weight=1)
         self.right_shell.rowconfigure(1, weight=1)
 
@@ -132,22 +139,22 @@ class PoseApp:
             corner_radius=t.RADIUS_PANEL,
             border_width=1,
             border_color=t.BORDER,
-            height=60,
+            height=64,
         )
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         top_bar.grid_propagate(False)
-        top_bar.columnconfigure(2, weight=1)
+        top_bar.columnconfigure(1, weight=1)
 
         btn_group = ctk.CTkFrame(top_bar, fg_color="transparent")
-        btn_group.grid(row=0, column=0, padx=(16, 12), pady=10, sticky="w")
+        btn_group.grid(row=0, column=0, padx=(16, 12), pady=11, sticky="w")
 
         self.start_btn = t.make_button(
             btn_group,
             "▶  解析開始",
             self.start_queue,
             kind="primary",
-            width=156,
-            height=40,
+            width=168,
+            height=42,
             large=True,
         )
         self.start_btn.pack(side="left", padx=(0, 10))
@@ -157,25 +164,28 @@ class PoseApp:
             "■  解析中断",
             self.cancel_queue,
             kind="danger",
-            width=142,
-            height=40,
+            width=148,
+            height=42,
             large=True,
         )
         self.cancel_btn.pack(side="left")
         t.set_btn_state(self.cancel_btn, False)
 
         self.banner_var = tk.StringVar(value="待機中の予約を上から順番に解析します。")
-        ctk.CTkLabel(
+        self.banner_label = tk.Label(
             top_bar,
             textvariable=self.banner_var,
-            font=f.small,
-            text_color=t.TEXT_SECONDARY,
+            font=(f.family, 11),
+            fg=t.TEXT_SECONDARY,
+            bg=t.BG_PANEL,
             anchor="e",
-        ).grid(row=0, column=2, padx=(8, 18), sticky="e")
+        )
+        self.banner_label.grid(row=0, column=1, sticky="ew", padx=(16, 20))
 
-        # Workspace Stack Container
-        self.workspace = ctk.CTkFrame(self.right_shell, fg_color="transparent")
+        # Workspace Stack Container (grid_propagate=False keeps 1:3 ratio invariant on view switch)
+        self.workspace = ctk.CTkFrame(self.right_shell, fg_color="transparent", width=100, height=100)
         self.workspace.grid(row=1, column=0, sticky="nsew")
+        self.workspace.grid_propagate(False)
         self.workspace.columnconfigure(0, weight=1)
         self.workspace.rowconfigure(0, weight=1)
 
@@ -211,6 +221,9 @@ class PoseApp:
             on_save_job=self._save_job_settings,
             get_current_defaults=lambda: deepcopy(self.default_settings),
         )
+
+        for v in (self.queue_view, self.add_view, self.settings_view):
+            v.grid_propagate(False)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
 
