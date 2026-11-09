@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+import gui
 from reservation_queue import Reservation, ReservationQueue, set_output, write_json
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,13 @@ class AnalysisWorkerManager:
         reservations: ReservationQueue,
         output_names_fn: Callable[[Path], dict[str, str]],
         window_provider: Optional[Callable[[], Any]] = None,
+        job_serializer: Optional[Callable[[Reservation], dict[str, Any]]] = None,
     ) -> None:
         self.base_dir = Path(base_dir).resolve()
         self.reservations = reservations
         self._output_names_fn = output_names_fn
         self._window_provider = window_provider
+        self._job_serializer = job_serializer
 
         # Concurrency & state controls
         self._state_lock = threading.Lock()
@@ -119,6 +122,10 @@ class AnalysisWorkerManager:
             except OSError:
                 pass
 
+        thread = self._queue_thread
+        if thread is not None and thread.is_alive() and threading.current_thread() != thread:
+            thread.join(timeout=timeout_sec)
+
         # Ensure active job is safely reverted to pending
         with self._state_lock:
             if self._current_job_id:
@@ -182,7 +189,8 @@ class AnalysisWorkerManager:
         config_dir = self.base_dir / ".analysis_jobs" / "configs"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / f"{job.id}.json"
-        write_json(config_path, job.settings)
+        clean_settings = {k: v for k, v in job.settings.items() if k in set(getattr(gui, "ENGINE_DEFAULTS", {}))}
+        write_json(config_path, clean_settings)
 
         # Ensure logs directory
         log_dir = self.base_dir / ".analysis_jobs" / "logs"
@@ -411,6 +419,9 @@ class AnalysisWorkerManager:
             return
         jobs_payload = []
         for j in self.reservations.jobs:
+            if callable(self._job_serializer):
+                jobs_payload.append(self._job_serializer(j))
+                continue
             settings = dict(j.settings)
             for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
                 if pk in settings:

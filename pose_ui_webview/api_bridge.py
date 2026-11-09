@@ -160,7 +160,10 @@ class BackendApi:
                 reservations=self.reservations,
                 output_names_fn=self._output_names_fn,
                 window_provider=lambda: self.window,
+                job_serializer=self.serialize_job,
             )
+        elif getattr(self.worker_manager, "_job_serializer", None) is None:
+            self.worker_manager._job_serializer = self.serialize_job
 
         # Fallback state flags if worker_manager not used directly
         self._is_processing = False
@@ -410,15 +413,20 @@ class BackendApi:
             # Destination determination
             if destination:
                 dest = Path(destination)
-            elif "OUTPUT_DIRECTORY" in settings and settings["OUTPUT_DIRECTORY"]:
+            elif settings.get("OUTPUT_DIRECTORY"):
                 dest = Path(settings["OUTPUT_DIRECTORY"])
-            elif "OUTPUT_ROOT" in settings and "OUTPUT_FOLDER_NAME" in settings:
-                dest = Path(settings["OUTPUT_ROOT"]) / settings["OUTPUT_FOLDER_NAME"]
+            elif settings.get("OUTPUT_ROOT") and settings.get("OUTPUT_FOLDER_NAME"):
+                dest = Path(settings["OUTPUT_ROOT"]) / str(settings["OUTPUT_FOLDER_NAME"])
             else:
                 dest = job.output
 
             sanitized = self.sanitize_settings(settings)
+            for non_engine_key in ("OUTPUT_DIRECTORY", "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME"):
+                sanitized.pop(non_engine_key, None)
+
             merged = deepcopy(job.settings)
+            for non_engine_key in ("OUTPUT_DIRECTORY", "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME"):
+                merged.pop(non_engine_key, None)
             merged.update(sanitized)
 
             # Validate RTMLib if changed
@@ -453,7 +461,7 @@ class BackendApi:
     ) -> dict[str, Any]:
         """Validates, sanitizes, and persists defaults to gui_settings.json."""
         with self._lock:
-            root = default_root or settings.get("OUTPUT_ROOT", self.reservations.output_root)
+            root = default_root or (settings.get("OUTPUT_ROOT") if isinstance(settings, dict) else None) or self.reservations.output_root
             resolved_root = str(Path(root).expanduser().resolve())
 
             mode = settings.get("MODEL_MODE", self.default_settings.get("MODEL_MODE", "performance"))
@@ -527,12 +535,15 @@ class BackendApi:
         self, video_path_or_job_id: str, frame_idx_or_time: int | float = 0
     ) -> str:
         """Extracts high-resolution frame for monitor preview pane."""
+        if not video_path_or_job_id or not isinstance(video_path_or_job_id, (str, Path)):
+            return ""
+        video_str = str(video_path_or_job_id)
         target_path: Optional[str] = None
-        job = self.reservations.find(video_path_or_job_id)
+        job = self.reservations.find(video_str)
         if job and job.video.is_file():
             target_path = str(job.video)
-        elif os.path.exists(video_path_or_job_id):
-            target_path = video_path_or_job_id
+        elif os.path.exists(video_str):
+            target_path = video_str
 
         if not target_path or not os.path.exists(target_path):
             return ""
@@ -555,15 +566,22 @@ class BackendApi:
 
     def get_output_preview_names(self, folder_path: str) -> dict[str, str]:
         """Returns the 4 standard output filenames for destination folder preview."""
-        if self._output_names_fn is None:
-            p = Path(folder_path)
-            return {
-                "OUTPUT_VIDEO_NAME": f"{p.name}.mp4",
-                "OUTPUT_YOLO_VIDEO_NAME": f"{p.name}-yolo.mp4",
-                "OUTPUT_CSV_NAME": f"{p.name}.csv",
-                "OUTPUT_METADATA_NAME": f"{p.name}_metadata.txt",
-            }
-        return self._output_names_fn(Path(folder_path))
+        if not folder_path or not isinstance(folder_path, (str, Path)):
+            return {}
+        p = Path(folder_path)
+        if not p.name:
+            return {}
+        try:
+            if self._output_names_fn is None:
+                return {
+                    "OUTPUT_VIDEO_NAME": f"{p.name}.mp4",
+                    "OUTPUT_YOLO_VIDEO_NAME": f"{p.name}-yolo.mp4",
+                    "OUTPUT_CSV_NAME": f"{p.name}.csv",
+                    "OUTPUT_METADATA_NAME": f"{p.name}_metadata.txt",
+                }
+            return self._output_names_fn(p)
+        except (ValueError, OSError):
+            return {}
 
     # ---- Internal Sanitization & Serialization Helpers -----------------------
 
@@ -614,7 +632,13 @@ class BackendApi:
                 parts = [p.strip() for p in classes.split(",") if p.strip()]
                 sanitized["YOLO_CLASSES"] = [int(p) for p in parts if p.isdigit()]
             elif isinstance(classes, (list, tuple)):
-                sanitized["YOLO_CLASSES"] = [int(p) for p in classes]
+                coerced = []
+                for p in classes:
+                    try:
+                        coerced.append(int(p))
+                    except (ValueError, TypeError):
+                        pass
+                sanitized["YOLO_CLASSES"] = coerced
 
         # Special handling: YOLO_MODEL
         if "YOLO_MODEL" in sanitized:
