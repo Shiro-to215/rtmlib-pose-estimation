@@ -10,3 +10,12 @@ analysis_queue.json
 test/
 tests/
 yolo11*.pt
+
+# Tools & Node runtime
+tools/
+.node/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+
