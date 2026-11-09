@@ -1442,10 +1442,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="動画姿勢推定 GUI / 解析ワーカー")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--legacy", action="store_true", help="従来版 CustomTkinter GUI を起動する")
+    parser.add_argument("--debug", action="store_true", help="PyWebView デバッグモードを有効にする")
+    parser.add_argument("--dev", action="store_true", help="Vite 開発サーバー (http://localhost:5173) に接続する")
     args = parser.parse_args()
     if args.analysis_worker:
         if args.config is None:
             parser.error("解析ワーカーには --config が必要です")
         run_analysis_worker(args.config)
-    else:
+    elif args.legacy:
         _start_gui()
+    else:
+        try:
+            from pose_ui_webview import launch_webview_gui
+        except ImportError as exc:
+            print(f"PyWebView GUIの起動に失敗しました: {exc}\n--legacy オプションで従来版GUIを起動できます。", file=sys.stderr)
+            sys.exit(1)
+        launch_webview_gui(debug=args.debug, dev_server=args.dev)

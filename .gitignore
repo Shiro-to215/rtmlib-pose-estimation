@@ -8,7 +8,8 @@ gui_settings.json
 analysis_queue.json
 .analysis_jobs/
 test/
-tests/
+tests/*
+!tests/test_pywebview_migration.py
 yolo11*.pt
 
 # Tools & Node runtime
