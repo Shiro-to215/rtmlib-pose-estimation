@@ -52,7 +52,7 @@ export const DashedAddZone: React.FC<DashedAddZoneProps> = ({ onClick, onDropVid
     >
       <div className="flex items-center gap-1.5 font-bold text-sm">
         <Plus className="w-4 h-4 text-[#0F766E]" />
-        <span>＋  予約を追加</span>
+        <span>予約を追加</span>
       </div>
       <span className="text-[11px] text-[#64748B] mt-0.5">
         クリックして動画と出力先を指定（または動画ファイルをここへドロップ）

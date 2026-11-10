@@ -30,6 +30,30 @@ export interface SettingsViewProps {
 
 type TabType = 'general' | 'detection' | 'tracking' | 'visualization';
 
+const JOB_SCOPED_SETTING_KEYS = new Set([
+  'INPUT_ROOT',
+  'INPUT_VIDEO_NAME',
+  'THUMBNAIL_ROOT',
+  'THUMBNAIL_IMAGE_NAME',
+  'OUTPUT_DIRECTORY',
+  'OUTPUT_ROOT',
+  'OUTPUT_FOLDER_NAME',
+  'OUTPUT_VIDEO_NAME',
+  'OUTPUT_YOLO_VIDEO_NAME',
+  'OUTPUT_CSV_NAME',
+  'OUTPUT_METADATA_NAME',
+]);
+
+function extractEngineParams(source: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const [k, v] of Object.entries(source || {})) {
+    if (!JOB_SCOPED_SETTING_KEYS.has(k)) {
+      result[k] = v;
+    }
+  }
+  return result;
+}
+
 export const SettingsView: React.FC<SettingsViewProps> = ({
   mode,
   job,
@@ -144,8 +168,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         LABEL_FONT_SCALE: 0.7,
       });
     } else {
-      // Reflect default settings into this job
-      resetToDefaults(defaultSettings);
+      // Reflect only analysis parameters from global defaults; preserve job input video & destination (Plan A)
+      resetToDefaults(extractEngineParams(defaultSettings));
     }
   };
 
@@ -154,10 +178,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setIsSaving(true);
     let success = false;
     if (mode === 'default') {
-      success = await onSaveDefault(values, defaultRoot);
+      success = await onSaveDefault(extractEngineParams(values), defaultRoot);
     } else if (job) {
       const trimmedThumb = thumbnail.trim();
-      const savePayload: Partial<JobSettings> = { ...values };
+      const savePayload: Partial<JobSettings> = { ...extractEngineParams(values) };
       if (trimmedThumb) {
         const sepIdx = Math.max(trimmedThumb.lastIndexOf('\\'), trimmedThumb.lastIndexOf('/'));
         savePayload.THUMBNAIL_ROOT = sepIdx >= 0 ? trimmedThumb.slice(0, sepIdx) : '';
@@ -190,7 +214,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
           >
             <ChevronLeft className="w-4 h-4" />
-            <span>← 戻る</span>
+            <span>戻る</span>
           </button>
           <div className="flex items-center gap-2">
             <h2 className="text-base font-bold text-[#1E293B] truncate max-w-md">{titleText}</h2>

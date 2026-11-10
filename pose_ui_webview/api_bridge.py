@@ -26,6 +26,32 @@ from .worker_manager import AnalysisWorkerManager
 
 logger = logging.getLogger(__name__)
 
+# Keys belonging strictly to an individual reservation job, never persisted as global defaults
+JOB_SCOPED_SETTING_KEYS: frozenset[str] = frozenset({
+    "INPUT_ROOT",
+    "INPUT_VIDEO_NAME",
+    "THUMBNAIL_ROOT",
+    "THUMBNAIL_IMAGE_NAME",
+    "OUTPUT_FOLDER_NAME",
+    "OUTPUT_VIDEO_NAME",
+    "OUTPUT_YOLO_VIDEO_NAME",
+    "OUTPUT_CSV_NAME",
+    "OUTPUT_METADATA_NAME",
+})
+
+# Keys that must never be overwritten via update_job_settings() payload dict
+IMMUTABLE_JOB_SETTING_KEYS: frozenset[str] = frozenset({
+    "INPUT_ROOT",
+    "INPUT_VIDEO_NAME",
+    "OUTPUT_DIRECTORY",
+    "OUTPUT_ROOT",
+    "OUTPUT_FOLDER_NAME",
+    "OUTPUT_VIDEO_NAME",
+    "OUTPUT_YOLO_VIDEO_NAME",
+    "OUTPUT_CSV_NAME",
+    "OUTPUT_METADATA_NAME",
+})
+
 
 def serialize_reservation(
     job: Reservation | dict[str, Any],
@@ -218,7 +244,11 @@ class BackendApi:
                 for title, keys in getattr(gui, "GROUPS", [])
             ]
             return {
-                "settings": deepcopy(self.default_settings),
+                "settings": {
+                    k: v
+                    for k, v in deepcopy(self.default_settings).items()
+                    if k not in JOB_SCOPED_SETTING_KEYS and k != "OUTPUT_DIRECTORY"
+                },
                 "queue": queue_data,
                 "system": {
                     "output_root": str(self.reservations.output_root),
@@ -421,8 +451,8 @@ class BackendApi:
                 dest = job.output
 
             sanitized = self.sanitize_settings(settings)
-            for non_engine_key in ("OUTPUT_DIRECTORY", "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME"):
-                sanitized.pop(non_engine_key, None)
+            for protected_key in IMMUTABLE_JOB_SETTING_KEYS:
+                sanitized.pop(protected_key, None)
 
             merged = deepcopy(job.settings)
             for non_engine_key in ("OUTPUT_DIRECTORY", "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME"):
@@ -472,9 +502,15 @@ class BackendApi:
                 self._resolve_rtmlib_fn(mode, pose_model, input_size, detector)
 
             sanitized = self.sanitize_settings(settings)
+            for job_key in JOB_SCOPED_SETTING_KEYS:
+                sanitized.pop(job_key, None)
+            sanitized.pop("OUTPUT_DIRECTORY", None)
             sanitized["OUTPUT_ROOT"] = resolved_root
 
             self.default_settings.update(sanitized)
+            for job_key in JOB_SCOPED_SETTING_KEYS:
+                self.default_settings.pop(job_key, None)
+            self.default_settings.pop("OUTPUT_DIRECTORY", None)
             write_json(self.settings_file, self.default_settings)
 
             self.reservations.output_root = resolved_root
@@ -663,16 +699,23 @@ class BackendApi:
         return serialize_reservation(job, thumbnail=thumb, thumbnail_info=info)
 
     def _load_default_settings(self) -> dict[str, Any]:
-        """Loads settings from JSON file or initializes from engine defaults."""
+        """Loads global default settings (excluding per-job I/O keys) from JSON or engine defaults."""
+        clean_defaults = {
+            k: v
+            for k, v in deepcopy(self.engine_defaults).items()
+            if k not in JOB_SCOPED_SETTING_KEYS and k != "OUTPUT_DIRECTORY"
+        }
         if self.settings_file.is_file():
             try:
                 data = json.loads(self.settings_file.read_text(encoding="utf-8"))
-                merged = deepcopy(self.engine_defaults)
-                merged.update(data)
-                return merged
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if k not in JOB_SCOPED_SETTING_KEYS and k != "OUTPUT_DIRECTORY":
+                            clean_defaults[k] = v
+                return clean_defaults
             except Exception as exc:
                 logger.warning("Could not read settings from %s (%s); using defaults", self.settings_file, exc)
-        return deepcopy(self.engine_defaults)
+        return clean_defaults
 
     def _push_queue_update(self) -> None:
         """Pushes queue snapshot update event to webview window."""

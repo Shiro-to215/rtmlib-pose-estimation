@@ -106,7 +106,7 @@ export function useSettingsForm(
   };
 
   const resetToDefaults = (defaults: Record<string, any>) => {
-    setValues({ ...defaults });
+    setValues((prev) => ({ ...prev, ...defaults }));
     setErrors({});
     setRtmlibWarning(null);
   };

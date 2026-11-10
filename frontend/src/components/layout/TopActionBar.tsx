@@ -35,7 +35,7 @@ export const TopActionBar: React.FC<TopActionBarProps> = ({
           }`}
         >
           <Play className="w-4 h-4 fill-current" />
-          <span>▶  解析開始</span>
+          <span>解析開始</span>
         </button>
 
         <button
@@ -50,7 +50,7 @@ export const TopActionBar: React.FC<TopActionBarProps> = ({
           }`}
         >
           <Square className="w-4 h-4 fill-current" />
-          <span>{isStopping ? '中断中...' : '■  解析中断'}</span>
+          <span>{isStopping ? '中断中...' : '解析中断'}</span>
         </button>
       </div>
 

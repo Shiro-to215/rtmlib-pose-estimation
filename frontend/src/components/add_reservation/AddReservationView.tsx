@@ -165,7 +165,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
           className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
         >
           <ChevronLeft className="w-4 h-4" />
-          <span>← 予約リストへ戻る</span>
+          <span>予約リストへ戻る</span>
         </button>
         <h2 className="text-base font-bold text-[#1E293B]">予約を追加</h2>
       </div>
@@ -420,7 +420,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
           }`}
         >
           <Plus className="w-4 h-4" />
-          <span>{isSubmitting ? '登録中...' : '＋ 予約リストに追加する'}</span>
+          <span>{isSubmitting ? '登録中...' : '予約リストに追加する'}</span>
         </button>
       </div>
     </div>

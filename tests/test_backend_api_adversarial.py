@@ -508,6 +508,98 @@ class TestBackendApiAdversarial(unittest.TestCase):
         res2 = self.api.update_job_settings(job["id"], {"OUTPUT_ROOT": str(self.output_root), "OUTPUT_FOLDER_NAME": None})
         self.assertIsNotNone(res2)
 
+    # =========================================================================
+    # 13. Global Default vs Per-Job Settings Isolation (Regression Suite)
+    # =========================================================================
+
+    def test_global_defaults_strip_legacy_job_scoped_io_keys(self):
+        """get_initial_data and save_default_settings must exclude per-job video/output filenames."""
+        # Simulate a legacy gui_settings.json containing old video keys like H7.MP4
+        legacy_settings_file = self.temp_path / "legacy_gui_settings.json"
+        legacy_settings_file.write_text(
+            json.dumps({
+                "INPUT_ROOT": "C:\\old_dir",
+                "INPUT_VIDEO_NAME": "H7.MP4",
+                "THUMBNAIL_ROOT": "C:\\old_thumb",
+                "THUMBNAIL_IMAGE_NAME": "H7.JPG",
+                "OUTPUT_ROOT": str(self.output_root),
+                "OUTPUT_FOLDER_NAME": "old_out",
+                "OUTPUT_VIDEO_NAME": "old_out.mp4",
+                "OUTPUT_YOLO_VIDEO_NAME": "old_out-yolo.mp4",
+                "OUTPUT_CSV_NAME": "old_out.csv",
+                "OUTPUT_METADATA_NAME": "old_out_metadata.txt",
+                "MODEL_MODE": "lightweight",
+            }),
+            encoding="utf-8",
+        )
+        api = BackendApi(base_dir=self.temp_path, settings_file=legacy_settings_file)
+
+        forbidden_default_keys = {
+            "INPUT_ROOT",
+            "INPUT_VIDEO_NAME",
+            "THUMBNAIL_ROOT",
+            "THUMBNAIL_IMAGE_NAME",
+            "OUTPUT_FOLDER_NAME",
+            "OUTPUT_VIDEO_NAME",
+            "OUTPUT_YOLO_VIDEO_NAME",
+            "OUTPUT_CSV_NAME",
+            "OUTPUT_METADATA_NAME",
+        }
+
+        initial_settings = api.get_initial_data()["settings"]
+        for k in forbidden_default_keys:
+            self.assertNotIn(k, initial_settings, f"Job-scoped key {k} leaked into get_initial_data()['settings']")
+        self.assertEqual(initial_settings.get("MODEL_MODE"), "lightweight")
+        self.assertIn("OUTPUT_ROOT", initial_settings)
+
+        saved = api.save_default_settings({"MODEL_MODE": "balanced", "INPUT_VIDEO_NAME": "H7.MP4"}, str(self.output_root))
+        persisted = json.loads(legacy_settings_file.read_text(encoding="utf-8"))
+        for k in forbidden_default_keys:
+            self.assertNotIn(k, saved)
+            self.assertNotIn(k, persisted, f"Job-scoped key {k} must not be persisted in gui_settings.json")
+
+    def test_update_job_settings_cannot_overwrite_input_video_or_output_names(self):
+        """Applying global defaults or passing INPUT_ROOT/INPUT_VIDEO_NAME must never alter a job's video."""
+        target_video = self._create_dummy_video("C0037.MP4")
+        jobs = self.api.add_reservations([str(target_video)], str(self.output_root), is_multi=True)
+        job_id = jobs[0]["id"]
+        orig_video_path = jobs[0]["video_path"]
+        orig_video_name = jobs[0]["video_name"]
+        orig_output_path = jobs[0]["output_path"]
+
+        # 1) Applying clean global defaults (which has OUTPUT_ROOT, no OUTPUT_FOLDER_NAME) preserves job video & dest
+        global_defaults = self.api.get_initial_data()["settings"]
+        updated_from_defaults = self.api.update_job_settings(
+            job_id,
+            {**global_defaults, "MODEL_MODE": "balanced"},
+        )
+        self.assertEqual(updated_from_defaults["video_path"], orig_video_path)
+        self.assertEqual(updated_from_defaults["output_path"], orig_output_path)
+        self.assertEqual(updated_from_defaults["settings"]["MODEL_MODE"], "balanced")
+
+        # 2) Passing stale INPUT_ROOT/INPUT_VIDEO_NAME/OUTPUT_*_NAME never alters job video or auto-generated names
+        updated = self.api.update_job_settings(
+            job_id,
+            {
+                "INPUT_ROOT": "C:\\stale\\folder",
+                "INPUT_VIDEO_NAME": "H7.MP4",
+                "OUTPUT_VIDEO_NAME": "stale.mp4",
+                "OUTPUT_YOLO_VIDEO_NAME": "stale-yolo.mp4",
+                "OUTPUT_CSV_NAME": "stale.csv",
+                "OUTPUT_METADATA_NAME": "stale_metadata.txt",
+                "MODEL_MODE": "lightweight",
+                "YOLO_IMAGE_SIZE": 640,
+            },
+        )
+
+        self.assertEqual(updated["video_path"], orig_video_path)
+        self.assertEqual(updated["video_name"], orig_video_name)
+        self.assertEqual(updated["output_path"], orig_output_path)
+        self.assertEqual(updated["settings"]["INPUT_VIDEO_NAME"], "C0037.MP4")
+        self.assertEqual(updated["settings"]["OUTPUT_VIDEO_NAME"], "C0037.mp4")
+        self.assertEqual(updated["settings"]["MODEL_MODE"], "lightweight")
+        self.assertEqual(updated["settings"]["YOLO_IMAGE_SIZE"], 640)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

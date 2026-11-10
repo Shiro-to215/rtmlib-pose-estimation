@@ -457,9 +457,30 @@ class BrowserMockBackend implements BackendApi {
   private _simTimer: number | null = null;
   private _activeJobId: string | null = null;
 
+  private _stripJobScopedKeys(settings: Partial<JobSettings>): Partial<JobSettings> {
+    const blocked = new Set([
+      'INPUT_ROOT',
+      'INPUT_VIDEO_NAME',
+      'THUMBNAIL_ROOT',
+      'THUMBNAIL_IMAGE_NAME',
+      'OUTPUT_FOLDER_NAME',
+      'OUTPUT_VIDEO_NAME',
+      'OUTPUT_YOLO_VIDEO_NAME',
+      'OUTPUT_CSV_NAME',
+      'OUTPUT_METADATA_NAME',
+    ]);
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(settings || {})) {
+      if (!blocked.has(k)) {
+        out[k] = v;
+      }
+    }
+    return out as Partial<JobSettings>;
+  }
+
   async get_initial_data(): Promise<InitialDataPayload> {
     return {
-      settings: { ...this._jobs[0].settings },
+      settings: this._stripJobScopedKeys(this._jobs[0].settings) as JobSettings,
       queue: [...this._jobs],
       system: {
         output_root: 'C:\\Output',
@@ -586,7 +607,12 @@ class BrowserMockBackend implements BackendApi {
   ): Promise<ReservationJob> {
     const job = this._jobs.find((j) => j.id === jobId);
     if (!job) throw new Error('Job not found');
-    job.settings = { ...job.settings, ...settings };
+    const safeSettings = { ...this._stripJobScopedKeys(settings) } as Record<string, any>;
+    delete safeSettings.OUTPUT_ROOT;
+    delete safeSettings.OUTPUT_DIRECTORY;
+    if ('THUMBNAIL_ROOT' in settings) safeSettings.THUMBNAIL_ROOT = settings.THUMBNAIL_ROOT;
+    if ('THUMBNAIL_IMAGE_NAME' in settings) safeSettings.THUMBNAIL_IMAGE_NAME = settings.THUMBNAIL_IMAGE_NAME;
+    job.settings = { ...job.settings, ...safeSettings };
     if (destination) {
       job.output_path = destination;
       job.output_folder = destination.split('\\').pop() || destination.split('/').pop() || job.output_folder;
@@ -610,8 +636,9 @@ class BrowserMockBackend implements BackendApi {
   }
 
   async save_default_settings(settings: Partial<JobSettings>, _defaultRoot?: string): Promise<JobSettings> {
-    this._jobs[0].settings = { ...this._jobs[0].settings, ...settings };
-    return { ...this._jobs[0].settings };
+    const clean = this._stripJobScopedKeys(settings);
+    this._jobs[0].settings = { ...this._jobs[0].settings, ...clean };
+    return this._stripJobScopedKeys(this._jobs[0].settings) as JobSettings;
   }
 
   async start_queue_processing(): Promise<{ status: string; job_id?: string }> {

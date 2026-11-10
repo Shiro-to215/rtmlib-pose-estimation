@@ -75,7 +75,7 @@ class TestMilestone3GateChallenge2(unittest.TestCase):
             # Guide & workflow strings
             "1. 入力ファイルの選択",
             "2. 出力先フォルダーの設定",
-            "＋ 予約リストに追加する",
+            "予約リストに追加する",
             # Settings tab categories
             "基本・出力設定",
             "検出・信頼度設定",
@@ -93,6 +93,18 @@ class TestMilestone3GateChallenge2(unittest.TestCase):
         
         missing = [s for s in required_strings if s not in bundle_text]
         self.assertEqual(missing, [], f"Missing required strings in compiled JS bundle: {missing}")
+
+        # Verify no duplicate icon+glyph strings remain in compiled UI buttons
+        forbidden_duplicate_labels = [
+            "▶  解析開始",
+            "■  解析中断",
+            "＋  予約を追加",
+            "＋ 予約リストに追加する",
+            "← 予約リストへ戻る",
+            "← 戻る",
+        ]
+        found_dups = [s for s in forbidden_duplicate_labels if s in bundle_text]
+        self.assertEqual(found_dups, [], f"Duplicate icon-prefix strings found in JS bundle: {found_dups}")
 
     def test_challenge3_all_engine_parameters_present(self):
         """Stress-test: Verify that all configurable parameter keys from gui.ENGINE_DEFAULTS appear in the bundle."""
