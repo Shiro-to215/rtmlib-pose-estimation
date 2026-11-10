@@ -8,9 +8,7 @@ gui_settings.json
 analysis_queue.json
 .analysis_jobs/
 test/
-tests/*
-!tests/test_*.py
-!tests/test_*.mjs
+tests/
 yolo11*.pt
 
 # Tools & Node runtime
