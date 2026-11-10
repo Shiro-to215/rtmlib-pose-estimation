@@ -151,7 +151,7 @@ class BackendApi:
             self.reservations = ReservationQueue(self.queue_file, default_out)
 
         # Worker Manager & Window hooks
-        self.window: Optional[webview.Window] = None
+        self._window: Optional[webview.Window] = None
         self.thumbnail_provider = thumbnail_provider
         self.worker_manager = worker_manager
         if self.worker_manager is None:
@@ -159,7 +159,7 @@ class BackendApi:
                 base_dir=self.base_dir,
                 reservations=self.reservations,
                 output_names_fn=self._output_names_fn,
-                window_provider=lambda: self.window,
+                window_provider=lambda: self._window,
                 job_serializer=self.serialize_job,
             )
         elif getattr(self.worker_manager, "_job_serializer", None) is None:
@@ -177,9 +177,9 @@ class BackendApi:
 
     def set_window(self, window: webview.Window) -> None:
         """Attaches the PyWebView Window instance to the bridge."""
-        self.window = window
+        self._window = window
         if self.worker_manager:
-            self.worker_manager.set_window_provider(lambda: self.window)
+            self.worker_manager.set_window_provider(lambda: self._window)
 
     @property
     def is_processing(self) -> bool:
@@ -237,7 +237,7 @@ class BackendApi:
 
     def select_video_files(self) -> list[str]:
         """Opens native multi-file video selection dialog and returns resolved paths."""
-        if self.window is None:
+        if self._window is None:
             return []
         dialog_type = getattr(webview.FileDialog, "OPEN", webview.OPEN_DIALOG)
         file_types = (
@@ -250,7 +250,7 @@ class BackendApi:
             else ""
         )
         try:
-            res = self.window.create_file_dialog(
+            res = self._window.create_file_dialog(
                 dialog_type=dialog_type,
                 directory=initial_dir,
                 allow_multiple=True,
@@ -268,7 +268,7 @@ class BackendApi:
 
     def select_directory(self, title: str = "出力先フォルダーを選択") -> str:
         """Opens native folder selection dialog and returns resolved directory path."""
-        if self.window is None:
+        if self._window is None:
             return ""
         dialog_type = getattr(webview.FileDialog, "FOLDER", webview.FOLDER_DIALOG)
         initial_dir = (
@@ -277,7 +277,7 @@ class BackendApi:
             else ""
         )
         try:
-            res = self.window.create_file_dialog(
+            res = self._window.create_file_dialog(
                 dialog_type=dialog_type,
                 directory=initial_dir,
                 allow_multiple=False,
@@ -293,7 +293,7 @@ class BackendApi:
 
     def select_image_file(self, title: str = "撮影日時取得用のサムネイル画像を選択") -> str | None:
         """Opens native single image file selection dialog (e.g. SONY THMBNL)."""
-        if self.window is None:
+        if self._window is None:
             return None
         dialog_type = getattr(webview.FileDialog, "OPEN", webview.OPEN_DIALOG)
         file_types = (
@@ -306,7 +306,7 @@ class BackendApi:
             else ""
         )
         try:
-            res = self.window.create_file_dialog(
+            res = self._window.create_file_dialog(
                 dialog_type=dialog_type,
                 directory=initial_dir,
                 allow_multiple=False,
@@ -676,7 +676,7 @@ class BackendApi:
 
     def _push_queue_update(self) -> None:
         """Pushes queue snapshot update event to webview window."""
-        if self.window is None:
+        if self._window is None:
             return
         jobs_payload = [self.serialize_job(j) for j in self.reservations.jobs]
         payload = {
@@ -698,7 +698,7 @@ class BackendApi:
             f"}}));"
         )
         try:
-            self.window.evaluate_js(js)
+            self._window.evaluate_js(js)
         except Exception:
             pass
 

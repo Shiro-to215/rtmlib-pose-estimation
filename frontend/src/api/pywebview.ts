@@ -40,22 +40,60 @@ export async function callApi<T>(fn: (api: BackendApi) => Promise<T>, fallback: 
 }
 
 // ---------------------------------------------------------------------------
-// Telemetry Subscription Listeners (Dual Event Delivery Support)
+// Telemetry Subscription Listeners (Dual Event Delivery Support & Deduplication)
 // ---------------------------------------------------------------------------
+
+/**
+ * Event deduplicator preventing duplicate callback execution when PyWebView pushes
+ * telemetry via both DOM CustomEvent (`pywebview:job-*`) and global window callback (`window.on*`)
+ * in the same event tick.
+ */
+export class EventDeduplicator {
+  private recentKeys = new Map<string, number>();
+  private windowMs: number;
+
+  constructor(windowMs = 80) {
+    this.windowMs = windowMs;
+  }
+
+  isDuplicate(key: string): boolean {
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+
+    // Prune expired entries
+    for (const [k, t] of this.recentKeys.entries()) {
+      if (now - t > this.windowMs) {
+        this.recentKeys.delete(k);
+      }
+    }
+
+    if (this.recentKeys.has(key)) {
+      return true;
+    }
+    this.recentKeys.set(key, now);
+    return false;
+  }
+}
 
 export function subscribeToJobProgress(
   callback: (jobId: string, progress: number, phase: string) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobId: string, pct: number, phase: string) => {
+    if (dedup.isDuplicate(`progress:${jobId}:${pct}:${phase}`)) return;
+    callback(jobId, pct, phase);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.jobId, detail.progress, detail.phase);
+      emit(detail.jobId, detail.progress, detail.phase);
     }
   };
   window.addEventListener('pywebview:job-progress', handler);
   const oldFn = window.onJobProgress;
   window.onJobProgress = (jobId, pct, phase) => {
-    callback(jobId, pct, phase);
+    emit(jobId, pct, phase);
     if (oldFn) oldFn(jobId, pct, phase);
   };
   return () => {
@@ -67,16 +105,21 @@ export function subscribeToJobProgress(
 export function subscribeToJobLog(
   callback: (jobId: string, logLine: string) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobId: string, logLine: string) => {
+    if (dedup.isDuplicate(`log:${jobId}:${logLine}`)) return;
+    callback(jobId, logLine);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.jobId, detail.logLine);
+      emit(detail.jobId, detail.logLine);
     }
   };
   window.addEventListener('pywebview:job-log', handler);
   const oldFn = window.onJobLog;
   window.onJobLog = (jobId, line) => {
-    callback(jobId, line);
+    emit(jobId, line);
     if (oldFn) oldFn(jobId, line);
   };
   return () => {
@@ -88,16 +131,21 @@ export function subscribeToJobLog(
 export function subscribeToJobFinished(
   callback: (jobId: string, returnCode: number) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobId: string, returnCode: number) => {
+    if (dedup.isDuplicate(`finished:${jobId}:${returnCode}`)) return;
+    callback(jobId, returnCode);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.jobId, detail.returnCode);
+      emit(detail.jobId, detail.returnCode);
     }
   };
   window.addEventListener('pywebview:job-finished', handler);
   const oldFn = window.onJobFinished;
   window.onJobFinished = (jobId, code) => {
-    callback(jobId, code);
+    emit(jobId, code);
     if (oldFn) oldFn(jobId, code);
   };
   return () => {
@@ -109,16 +157,21 @@ export function subscribeToJobFinished(
 export function subscribeToJobStarted(
   callback: (jobId: string, videoName: string, outputPath: string) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobId: string, videoName: string, outputPath: string) => {
+    if (dedup.isDuplicate(`started:${jobId}:${videoName}:${outputPath}`)) return;
+    callback(jobId, videoName, outputPath);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.jobId, detail.videoName, detail.outputPath);
+      emit(detail.jobId, detail.videoName, detail.outputPath);
     }
   };
   window.addEventListener('pywebview:job-started', handler);
   const oldFn = window.onJobStarted;
   window.onJobStarted = (jobId, name, out) => {
-    callback(jobId, name, out);
+    emit(jobId, name, out);
     if (oldFn) oldFn(jobId, name, out);
   };
   return () => {
@@ -130,16 +183,22 @@ export function subscribeToJobStarted(
 export function subscribeToQueueUpdate(
   callback: (jobs: ReservationJob[], activeJobId: string | null, queueActive: boolean) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobs: ReservationJob[], activeJobId: string | null, queueActive: boolean) => {
+    const signature = `queue:${activeJobId}:${queueActive}:${jobs?.length ?? 0}:${jobs?.map((j) => `${j.id}_${j.state}`).join(',')}`;
+    if (dedup.isDuplicate(signature)) return;
+    callback(jobs, activeJobId, queueActive);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.jobs, detail.active_job_id, detail.queue_active);
+      emit(detail.jobs, detail.active_job_id ?? null, detail.queue_active ?? false);
     }
   };
   window.addEventListener('pywebview:queue-update', handler);
   const oldFn = window.onQueueUpdated;
   window.onQueueUpdated = (jobs) => {
-    callback(jobs, null, false);
+    emit(jobs, null, false);
     if (oldFn) oldFn(jobs);
   };
   return () => {
@@ -151,16 +210,21 @@ export function subscribeToQueueUpdate(
 export function subscribeToQueueStatus(
   callback: (isActive: boolean, activeJobId: string | null) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (isActive: boolean, activeJobId: string | null) => {
+    if (dedup.isDuplicate(`status:${isActive}:${activeJobId}`)) return;
+    callback(isActive, activeJobId);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.isActive, detail.activeJobId);
+      emit(detail.isActive, detail.activeJobId);
     }
   };
   window.addEventListener('pywebview:queue-status', handler);
   const oldFn = window.onQueueStatusChanged;
   window.onQueueStatusChanged = (isActive, activeJobId) => {
-    callback(isActive, activeJobId);
+    emit(isActive, activeJobId);
     if (oldFn) oldFn(isActive, activeJobId);
   };
   return () => {
@@ -172,16 +236,21 @@ export function subscribeToQueueStatus(
 export function subscribeToThumbnail(
   callback: (jobId: string, dataUrl: string, info: string) => void
 ): () => void {
+  const dedup = new EventDeduplicator(80);
+  const emit = (jobId: string, dataUrl: string, info: string) => {
+    if (dedup.isDuplicate(`thumb:${jobId}:${info}:${dataUrl?.length ?? 0}`)) return;
+    callback(jobId, dataUrl, info);
+  };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      callback(detail.job_id, detail.data_url, detail.info);
+      emit(detail.job_id, detail.data_url, detail.info);
     }
   };
   window.addEventListener('pywebview:thumbnail', handler);
   const oldFn = window.onJobThumbnail;
   window.onJobThumbnail = (jobId, url, info) => {
-    callback(jobId, url, info);
+    emit(jobId, url, info);
     if (oldFn) oldFn(jobId, url, info);
   };
   return () => {

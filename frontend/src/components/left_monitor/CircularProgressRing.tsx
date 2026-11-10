@@ -15,7 +15,7 @@ export const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
   subtitle = '予約を開始すると進捗を表示',
   tone = 'idle',
 }) => {
-  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const safePct = isNaN(percent) ? 0 : Math.max(0, Math.min(100, Math.round(percent)));
 
   // SVG Geometry constants matching CustomTkinter 184px diameter & 15px stroke
   const size = 184;
@@ -23,7 +23,7 @@ export const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
   const center = size / 2; // 92
   const radius = 76; // Centerline radius
   const circumference = 2 * Math.PI * radius; // ~477.522px
-  const strokeDashoffset = circumference * (1 - clamped / 100);
+  const strokeDashoffset = circumference * (1 - safePct / 100);
 
   // Phase color mappings
   const colorMap: Record<ProgressTone, { stroke: string; pct: string; phase: string }> = {
@@ -87,7 +87,7 @@ export const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
         />
 
         {/* Active Progress Arc (GPU-Accelerated strokeDashoffset) */}
-        {clamped > 0 && (
+        {safePct > 0 && (
           <circle
             cx={center}
             cy={center}
@@ -106,7 +106,7 @@ export const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
       {/* Center Status Typography */}
       <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none px-4">
         <span className={`text-2xl font-bold font-mono tracking-tight ${currentColors.pct}`}>
-          {clamped}%
+          {safePct}%
         </span>
         <span className={`text-xs font-bold tracking-wide mt-0.5 ${currentColors.phase}`}>
           {phaseTitle}

@@ -9,7 +9,8 @@ analysis_queue.json
 .analysis_jobs/
 test/
 tests/*
-!tests/test_pywebview_migration.py
+!tests/test_*.py
+!tests/test_*.mjs
 yolo11*.pt
 
 # Tools & Node runtime

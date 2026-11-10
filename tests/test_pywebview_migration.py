@@ -1017,6 +1017,73 @@ class TestApiBridgeInterfaceContracts(unittest.TestCase):
             pass
 
 
+class TestPyWebViewDesktopLaunchAndLifecycle(unittest.TestCase):
+    """Tier 4: Automated Headless/Auto-Closing PyWebView Desktop Launch & Lifecycle Verification (Requirement R4)."""
+
+    def test_production_bundle_exists(self):
+        """Verifies that compiled frontend bundle index.html exists."""
+        dist_index = WORKSPACE_ROOT / "frontend" / "dist" / "index.html"
+        self.assertTrue(
+            dist_index.is_file(),
+            f"Production bundle not found at {dist_index}. Please run npm run build.",
+        )
+        self.assertGreater(dist_index.stat().st_size, 200, "dist/index.html is unexpectedly small")
+
+    def test_launch_webview_gui_auto_closing(self):
+        """Launches launch_webview_gui pointing to dist/index.html and cleanly shuts down."""
+        dist_index = WORKSPACE_ROOT / "frontend" / "dist" / "index.html"
+        if not dist_index.is_file():
+            self.skipTest("Production bundle not yet built")
+
+        try:
+            import webview
+            import pose_ui_webview.app as app_mod
+        except ImportError as e:
+            self.skipTest(f"PyWebView package not installed: {e}")
+
+        verification_state = {
+            "window_initialized": False,
+            "title_matched": False,
+            "dimensions_valid": False,
+            "closed_cleanly": False,
+        }
+
+        def on_startup(window: webview.Window):
+            try:
+                if window is not None:
+                    verification_state["window_initialized"] = True
+
+                if "動画姿勢推定" in (window.title or ""):
+                    verification_state["title_matched"] = True
+
+                if window.width >= 1200 and window.height >= 675:
+                    verification_state["dimensions_valid"] = True
+
+                # Allow webview engine a brief settling window
+                time.sleep(1.0)
+
+                # Cleanly destroy window
+                window.destroy()
+                verification_state["closed_cleanly"] = True
+            except Exception as ex:
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+
+        # Execute launcher with on_startup hook
+        app_mod.launch_webview_gui(
+            base_dir=WORKSPACE_ROOT,
+            on_startup=on_startup,
+            debug=False,
+        )
+
+        self.assertTrue(verification_state["window_initialized"], "Window was not initialized")
+        self.assertTrue(verification_state["title_matched"], "Window title mismatch")
+        self.assertTrue(verification_state["dimensions_valid"], "Window dimensions do not meet min 1200x675")
+        self.assertTrue(verification_state["closed_cleanly"], "Window did not close cleanly")
+
+
 class CustomTestResult(unittest.TextTestResult):
     """Custom test result collector for detailed console reporting."""
 
@@ -1056,6 +1123,7 @@ def run_all_tests() -> int:
     suite.addTests(loader.loadTestsFromTestCase(TestReservationQueueBoundaryAndCornerCases))
     suite.addTests(loader.loadTestsFromTestCase(TestEngineFunctions))
     suite.addTests(loader.loadTestsFromTestCase(TestApiBridgeInterfaceContracts))
+    suite.addTests(loader.loadTestsFromTestCase(TestPyWebViewDesktopLaunchAndLifecycle))
 
     print("=" * 80)
     print("  PyWebView & React/Vite Migration Verification Suite")

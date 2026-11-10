@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Optional, Sequence
@@ -200,6 +201,8 @@ def launch_webview_gui(
     output_names_fn: Callable | None = None,
     debug: bool = False,
     dev_server: bool | str | None = None,
+    on_startup: Callable[[webview.Window], None] | None = None,
+    storage_path: str | None = None,
 ) -> None:
     """Main application launcher that configures and starts the PyWebView desktop host."""
     if base_dir is None:
@@ -322,8 +325,27 @@ def launch_webview_gui(
 
     # Start PyWebView loop (Edge WebView2 on Windows)
     use_http_server = bool(target_url and not target_url.startswith("http"))
+    cache_path = (
+        storage_path
+        or os.environ.get("PYWEBVIEW_STORAGE_PATH")
+        or os.path.join(tempfile.gettempdir(), "pywebview_cache")
+    )
+
+    def _startup_callback() -> None:
+        if on_startup:
+            try:
+                on_startup(window)
+            except Exception as e:
+                logger.error("Error in on_startup callback: %s", e)
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+
     webview.start(
+        _startup_callback if on_startup else None,
         debug=debug,
         http_server=use_http_server,
+        storage_path=cache_path,
         private_mode=False,
     )
