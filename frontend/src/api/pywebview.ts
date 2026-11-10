@@ -1,22 +1,591 @@
+import {
+  InitialDataPayload,
+  JobSettings,
+  ReservationJob,
+} from '../types/models';
 import { BackendApi } from '../types/pywebview';
 
-export function getBackendApi(): BackendApi | null {
-  if (typeof window !== 'undefined' && window.pywebview && window.pywebview.api) {
-    return window.pywebview.api;
-  }
-  return null;
+/**
+ * Returns true if the PyWebView native desktop bridge is available
+ */
+export function isPyWebViewHost(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.pywebview !== 'undefined' &&
+    typeof window.pywebview.api !== 'undefined'
+  );
 }
 
+/**
+ * Retrieves the native BackendApi or falls back to BrowserMockBackend for standalone dev
+ */
+export function getBackendApi(): BackendApi {
+  if (isPyWebViewHost()) {
+    return window.pywebview!.api;
+  }
+  return browserMockBackend;
+}
+
+/**
+ * Helper to execute an API call with fallback on error
+ */
 export async function callApi<T>(fn: (api: BackendApi) => Promise<T>, fallback: T): Promise<T> {
   const api = getBackendApi();
-  if (!api) {
-    console.warn('[PyWebView] Backend API not available (browser mock fallback)');
-    return fallback;
-  }
   try {
     return await fn(api);
   } catch (err) {
     console.error('[PyWebView] Bridge call error:', err);
-    throw err;
+    return fallback;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Telemetry Subscription Listeners (Dual Event Delivery Support)
+// ---------------------------------------------------------------------------
+
+export function subscribeToJobProgress(
+  callback: (jobId: string, progress: number, phase: string) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.jobId, detail.progress, detail.phase);
+    }
+  };
+  window.addEventListener('pywebview:job-progress', handler);
+  const oldFn = window.onJobProgress;
+  window.onJobProgress = (jobId, pct, phase) => {
+    callback(jobId, pct, phase);
+    if (oldFn) oldFn(jobId, pct, phase);
+  };
+  return () => {
+    window.removeEventListener('pywebview:job-progress', handler);
+    window.onJobProgress = oldFn;
+  };
+}
+
+export function subscribeToJobLog(
+  callback: (jobId: string, logLine: string) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.jobId, detail.logLine);
+    }
+  };
+  window.addEventListener('pywebview:job-log', handler);
+  const oldFn = window.onJobLog;
+  window.onJobLog = (jobId, line) => {
+    callback(jobId, line);
+    if (oldFn) oldFn(jobId, line);
+  };
+  return () => {
+    window.removeEventListener('pywebview:job-log', handler);
+    window.onJobLog = oldFn;
+  };
+}
+
+export function subscribeToJobFinished(
+  callback: (jobId: string, returnCode: number) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.jobId, detail.returnCode);
+    }
+  };
+  window.addEventListener('pywebview:job-finished', handler);
+  const oldFn = window.onJobFinished;
+  window.onJobFinished = (jobId, code) => {
+    callback(jobId, code);
+    if (oldFn) oldFn(jobId, code);
+  };
+  return () => {
+    window.removeEventListener('pywebview:job-finished', handler);
+    window.onJobFinished = oldFn;
+  };
+}
+
+export function subscribeToJobStarted(
+  callback: (jobId: string, videoName: string, outputPath: string) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.jobId, detail.videoName, detail.outputPath);
+    }
+  };
+  window.addEventListener('pywebview:job-started', handler);
+  const oldFn = window.onJobStarted;
+  window.onJobStarted = (jobId, name, out) => {
+    callback(jobId, name, out);
+    if (oldFn) oldFn(jobId, name, out);
+  };
+  return () => {
+    window.removeEventListener('pywebview:job-started', handler);
+    window.onJobStarted = oldFn;
+  };
+}
+
+export function subscribeToQueueUpdate(
+  callback: (jobs: ReservationJob[], activeJobId: string | null, queueActive: boolean) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.jobs, detail.active_job_id, detail.queue_active);
+    }
+  };
+  window.addEventListener('pywebview:queue-update', handler);
+  const oldFn = window.onQueueUpdated;
+  window.onQueueUpdated = (jobs) => {
+    callback(jobs, null, false);
+    if (oldFn) oldFn(jobs);
+  };
+  return () => {
+    window.removeEventListener('pywebview:queue-update', handler);
+    window.onQueueUpdated = oldFn;
+  };
+}
+
+export function subscribeToQueueStatus(
+  callback: (isActive: boolean, activeJobId: string | null) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.isActive, detail.activeJobId);
+    }
+  };
+  window.addEventListener('pywebview:queue-status', handler);
+  const oldFn = window.onQueueStatusChanged;
+  window.onQueueStatusChanged = (isActive, activeJobId) => {
+    callback(isActive, activeJobId);
+    if (oldFn) oldFn(isActive, activeJobId);
+  };
+  return () => {
+    window.removeEventListener('pywebview:queue-status', handler);
+    window.onQueueStatusChanged = oldFn;
+  };
+}
+
+export function subscribeToThumbnail(
+  callback: (jobId: string, dataUrl: string, info: string) => void
+): () => void {
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail) {
+      callback(detail.job_id, detail.data_url, detail.info);
+    }
+  };
+  window.addEventListener('pywebview:thumbnail', handler);
+  const oldFn = window.onJobThumbnail;
+  window.onJobThumbnail = (jobId, url, info) => {
+    callback(jobId, url, info);
+    if (oldFn) oldFn(jobId, url, info);
+  };
+  return () => {
+    window.removeEventListener('pywebview:thumbnail', handler);
+    window.onJobThumbnail = oldFn;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Standalone Browser Mock Backend Implementation (`npm run dev`)
+// ---------------------------------------------------------------------------
+
+class BrowserMockBackend implements BackendApi {
+  private _jobs: ReservationJob[] = [
+    {
+      id: 'mock-job-001',
+      state: 'pending',
+      error: '',
+      created_at: new Date().toISOString(),
+      video_path: 'C:\\Videos\\sample_dance_01.mp4',
+      video_name: 'sample_dance_01.mp4',
+      output_path: 'C:\\Output\\sample_dance_01',
+      output_folder: 'sample_dance_01',
+      thumbnail: '',
+      thumbnail_info: '1920×1080 px',
+      settings: {
+        INPUT_ROOT: 'C:\\Videos',
+        INPUT_VIDEO_NAME: 'sample_dance_01.mp4',
+        OUTPUT_ROOT: 'C:\\Output',
+        OUTPUT_FOLDER_NAME: 'sample_dance_01',
+        OUTPUT_VIDEO_NAME: 'sample_dance_01.mp4',
+        OUTPUT_YOLO_VIDEO_NAME: 'sample_dance_01-yolo.mp4',
+        OUTPUT_CSV_NAME: 'sample_dance_01.csv',
+        OUTPUT_METADATA_NAME: 'sample_dance_01_metadata.txt',
+        DEVICE: 'auto',
+        MODEL_MODE: 'performance',
+        YOLO_MODEL: 'yolo11m.pt',
+        YOLO_CLASSES: [0],
+        YOLO_TRACK_ID: null,
+        CSV_MAX_PERSONS: 3,
+        RTMLIB_POSE_MODEL: 'mode',
+        RTMLIB_POSE_INPUT_SIZE: 'mode',
+        RTMLIB_PERSON_DETECTOR: 'mode',
+        YOLO_IMAGE_SIZE: 1280,
+        YOLO_CONFIDENCE: 0.20,
+        YOLO_IOU: 0.50,
+        CROP_PADDING_RATIO: 0.25,
+        KEYPOINT_THRESHOLD: 0.45,
+        YOLO_TRACKER: 'bytetrack.yaml',
+        TARGET_LOCK_RAW_ID: true,
+        TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING: true,
+        TARGET_SELECTION_MIN_FRAMES: 15,
+        TARGET_SELECTION_COVERAGE_WEIGHT: 0.50,
+        TARGET_BOX_FILL_MAX_FRAMES: 60,
+        TARGET_REACQUIRE_MAX_DISTANCE: 300.0,
+        TARGET_REACQUIRE_MIN_IOU: 0.05,
+        TARGET_TRACK_MATCH_THRESHOLD: 0.75,
+        TARGET_TRACK_MIN_IOU: 0.15,
+        TRACK_MAX_DISTANCE: 250.0,
+        TRACK_MAX_MISSED_FRAMES: 8,
+        TRACK_MATCH_THRESHOLD: 2.00,
+        TRACK_CENTER_WEIGHT: 0.35,
+        TRACK_KEYPOINT_WEIGHT: 0.35,
+        TRACK_POSE_WEIGHT: 0.20,
+        TRACK_BBOX_WEIGHT: 0.10,
+        TRACK_VELOCITY_SMOOTHING: 0.35,
+        TRACK_RAW_ID_BONUS: 2.00,
+        TRACK_PREDICTED_BOX_WEIGHT: 0.35,
+        TRACK_PREDICTION_MAX_FRAMES: 2,
+        POSE_TRACK_KEYPOINT_WEIGHT: 0.65,
+        POSE_TRACK_CENTER_WEIGHT: 0.25,
+        POSE_TRACK_SHAPE_WEIGHT: 0.10,
+        POSE_BOX_IOU_WEIGHT: 2.00,
+        POSE_BOX_CENTER_WEIGHT: 0.50,
+        POSE_TEMPORAL_WEIGHT: 0.50,
+        DRAW_SKELETON: true,
+        DRAW_BBOX: true,
+        SKELETON_LINE_WIDTH: 2,
+        KEYPOINT_RADIUS: 4,
+        LABEL_FONT_SCALE: 0.70,
+      },
+      summary: {
+        model_mode: 'performance',
+        yolo_model: 'yolo11m.pt',
+        device: 'auto',
+        track_id: null,
+        csv_max_persons: 3,
+      },
+    },
+    {
+      id: 'mock-job-002',
+      state: 'done',
+      error: '',
+      created_at: new Date(Date.now() - 3600000).toISOString(),
+      video_path: 'C:\\Videos\\sample_sprint.mp4',
+      video_name: 'sample_sprint.mp4',
+      output_path: 'C:\\Output\\sample_sprint',
+      output_folder: 'sample_sprint',
+      thumbnail: '',
+      thumbnail_info: '1280×720 px',
+      settings: {
+        INPUT_ROOT: 'C:\\Videos',
+        INPUT_VIDEO_NAME: 'sample_sprint.mp4',
+        OUTPUT_ROOT: 'C:\\Output',
+        OUTPUT_FOLDER_NAME: 'sample_sprint',
+        OUTPUT_VIDEO_NAME: 'sample_sprint.mp4',
+        OUTPUT_YOLO_VIDEO_NAME: 'sample_sprint-yolo.mp4',
+        OUTPUT_CSV_NAME: 'sample_sprint.csv',
+        OUTPUT_METADATA_NAME: 'sample_sprint_metadata.txt',
+        DEVICE: 'auto',
+        MODEL_MODE: 'lightweight',
+        YOLO_MODEL: 'yolo11s.pt',
+        YOLO_CLASSES: [0],
+        YOLO_TRACK_ID: 1,
+        CSV_MAX_PERSONS: 1,
+        RTMLIB_POSE_MODEL: 'mode',
+        RTMLIB_POSE_INPUT_SIZE: 'mode',
+        RTMLIB_PERSON_DETECTOR: 'mode',
+      },
+      summary: {
+        model_mode: 'lightweight',
+        yolo_model: 'yolo11s.pt',
+        device: 'auto',
+        track_id: 1,
+        csv_max_persons: 1,
+      },
+    },
+  ];
+
+  private _isProcessing = false;
+  private _simTimer: number | null = null;
+  private _activeJobId: string | null = null;
+
+  async get_initial_data(): Promise<InitialDataPayload> {
+    return {
+      settings: { ...this._jobs[0].settings },
+      queue: [...this._jobs],
+      system: {
+        output_root: 'C:\\Output',
+        is_processing: this._isProcessing,
+        current_job_id: this._activeJobId,
+        queue_active: this._isProcessing,
+        active_job_id: this._activeJobId,
+        choices: {
+          MODEL_MODE: ['performance', 'balanced', 'lightweight'],
+          YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
+          DEVICE: ['auto', 'cpu', 'cuda'],
+          RTMLIB_POSE_MODEL: ['mode', 't', 's', 'm', 'l', 'x'],
+          RTMLIB_POSE_INPUT_SIZE: ['mode', '256x192', '384x288'],
+          RTMLIB_PERSON_DETECTOR: ['mode', 'nano', 'tiny', 's', 'm', 'l', 'x'],
+          YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
+          BACKEND: ['onnxruntime', 'opencv'],
+        },
+        labels: {
+          MODEL_MODE: 'モデル動作モード',
+          YOLO_MODEL: 'YOLOモデル',
+          DEVICE: '推論デバイス',
+          RTMLIB_POSE_MODEL: 'RTMPoseモデル',
+          RTMLIB_POSE_INPUT_SIZE: 'RTMPose入力解像度',
+          RTMLIB_PERSON_DETECTOR: 'RTMLib人物検出器',
+          YOLO_TRACKER: 'トラッカー設定',
+          BACKEND: '推論バックエンド',
+        },
+        groups: [
+          { title: '基本推論設定', keys: ['MODEL_MODE', 'YOLO_MODEL', 'DEVICE'] },
+        ],
+      },
+      choices: {
+        MODEL_MODE: ['performance', 'balanced', 'lightweight'],
+        YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
+        DEVICE: ['auto', 'cpu', 'cuda'],
+        RTMLIB_POSE_MODEL: ['mode', 't', 's', 'm', 'l', 'x'],
+        RTMLIB_POSE_INPUT_SIZE: ['mode', '256x192', '384x288'],
+        RTMLIB_PERSON_DETECTOR: ['mode', 'nano', 'tiny', 's', 'm', 'l', 'x'],
+        YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
+        BACKEND: ['onnxruntime', 'opencv'],
+      },
+    };
+  }
+
+  async select_video_files(): Promise<string[]> {
+    return ['C:\\Videos\\sample_video_simulated.mp4'];
+  }
+
+  async select_directory(_title?: string): Promise<string> {
+    return 'C:\\Output\\CustomFolder';
+  }
+
+  async select_image_file(_title?: string): Promise<string | null> {
+    return 'C:\\Videos\\thumbnail.jpg';
+  }
+
+  async add_reservations(
+    videos: string[],
+    outputFolder?: string | null,
+    _isMulti?: boolean,
+    settings?: Partial<JobSettings>,
+    _thumbnail?: string | null
+  ): Promise<ReservationJob[]> {
+    const created: ReservationJob[] = videos.map((v, idx) => {
+      const name = v.split('\\').pop() || v.split('/').pop() || `video_${Date.now()}_${idx}.mp4`;
+      const stem = name.replace(/\.[^/.]+$/, '');
+      const out = outputFolder ? `${outputFolder}\\${stem}` : `C:\\Output\\${stem}`;
+      return {
+        id: `mock-job-${Date.now()}-${idx}`,
+        state: 'pending',
+        error: '',
+        created_at: new Date().toISOString(),
+        video_path: v,
+        video_name: name,
+        output_path: out,
+        output_folder: stem,
+        thumbnail: '',
+        thumbnail_info: '1920×1080 px',
+        settings: {
+          ...this._jobs[0].settings,
+          ...settings,
+          INPUT_VIDEO_NAME: name,
+          OUTPUT_FOLDER_NAME: stem,
+        },
+        summary: {
+          model_mode: settings?.MODEL_MODE || 'performance',
+          yolo_model: settings?.YOLO_MODEL || 'yolo11m.pt',
+          device: settings?.DEVICE || 'auto',
+          track_id: settings?.YOLO_TRACK_ID ?? null,
+          csv_max_persons: settings?.CSV_MAX_PERSONS ?? 3,
+        },
+      };
+    });
+    this._jobs.push(...created);
+    this._emitQueueUpdate();
+    return created;
+  }
+
+  async remove_jobs(jobIds: string[]): Promise<ReservationJob[]> {
+    this._jobs = this._jobs.filter((j) => !jobIds.includes(j.id) || j.state === 'running');
+    this._emitQueueUpdate();
+    return [...this._jobs];
+  }
+
+  async move_job(jobId: string, direction: 'up' | 'down' | number): Promise<ReservationJob[]> {
+    const idx = this._jobs.findIndex((j) => j.id === jobId);
+    if (idx === -1) return [...this._jobs];
+    const delta = direction === 'up' || direction === -1 ? -1 : 1;
+    const targetIdx = idx + delta;
+    if (targetIdx >= 0 && targetIdx < this._jobs.length) {
+      const temp = this._jobs[idx];
+      this._jobs[idx] = this._jobs[targetIdx];
+      this._jobs[targetIdx] = temp;
+      this._emitQueueUpdate();
+    }
+    return [...this._jobs];
+  }
+
+  async update_job_settings(
+    jobId: string,
+    settings: Partial<JobSettings>,
+    resetFailed?: boolean,
+    destination?: string
+  ): Promise<ReservationJob> {
+    const job = this._jobs.find((j) => j.id === jobId);
+    if (!job) throw new Error('Job not found');
+    job.settings = { ...job.settings, ...settings };
+    if (destination) {
+      job.output_path = destination;
+      job.output_folder = destination.split('\\').pop() || destination.split('/').pop() || job.output_folder;
+    }
+    if (resetFailed && job.state === 'failed') {
+      job.state = 'pending';
+      job.error = '';
+    }
+    this._emitQueueUpdate();
+    return { ...job };
+  }
+
+  async retry_job(jobId: string): Promise<ReservationJob[]> {
+    const job = this._jobs.find((j) => j.id === jobId);
+    if (job) {
+      job.state = 'pending';
+      job.error = '';
+      this._emitQueueUpdate();
+    }
+    return [...this._jobs];
+  }
+
+  async save_default_settings(settings: Partial<JobSettings>, _defaultRoot?: string): Promise<JobSettings> {
+    this._jobs[0].settings = { ...this._jobs[0].settings, ...settings };
+    return { ...this._jobs[0].settings };
+  }
+
+  async start_queue_processing(): Promise<{ status: string; job_id?: string }> {
+    const pending = this._jobs.find((j) => j.state === 'pending');
+    if (!pending) return { status: 'empty' };
+    this._isProcessing = true;
+    this._activeJobId = pending.id;
+    pending.state = 'running';
+    this._emitQueueUpdate();
+
+    this._emitEvent('pywebview:job-started', {
+      jobId: pending.id,
+      videoName: pending.video_name,
+      outputPath: pending.output_path,
+    });
+    this._emitLog(pending.id, `--- 解析開始: ${pending.video_name} ---\n`);
+
+    let currentPct = 0;
+    this._simTimer = window.setInterval(() => {
+      if (!this._isProcessing) {
+        if (this._simTimer) clearInterval(this._simTimer);
+        return;
+      }
+      currentPct += 5;
+      const phase = currentPct <= 50 ? 'YOLO' : 'RTMLIB';
+      this._emitEvent('pywebview:job-progress', {
+        jobId: pending.id,
+        progress: currentPct,
+        phase,
+      });
+
+      if (currentPct % 20 === 0) {
+        this._emitLog(pending.id, `[Worker] ${phase} 進捗: ${currentPct}%\n`);
+      }
+
+      if (currentPct >= 100) {
+        if (this._simTimer) clearInterval(this._simTimer);
+        pending.state = 'done';
+        this._emitLog(pending.id, `--- 解析完了: ${pending.video_name} ---\n`);
+        this._emitEvent('pywebview:job-finished', { jobId: pending.id, returnCode: 0 });
+        this._isProcessing = false;
+        this._activeJobId = null;
+        this._emitQueueUpdate();
+      }
+    }, 250);
+
+    return { status: 'started', job_id: pending.id };
+  }
+
+  async cancel_current_job(): Promise<{ status: string; job_id?: string }> {
+    if (!this._isProcessing || !this._activeJobId) return { status: 'idle' };
+    const jid = this._activeJobId;
+    if (this._simTimer) clearInterval(this._simTimer);
+    const job = this._jobs.find((j) => j.id === jid);
+    if (job) {
+      job.state = 'pending';
+    }
+    this._isProcessing = false;
+    this._activeJobId = null;
+    this._emitLog(jid, `--- 解析中断: ${job?.video_name || ''} を待機リストに戻しました ---\n`);
+    this._emitEvent('pywebview:job-progress', { jobId: jid, progress: 0, phase: 'STOPPING' });
+    this._emitEvent('pywebview:job-finished', { jobId: jid, returnCode: -1 });
+    this._emitQueueUpdate();
+    return { status: 'stopping', job_id: jid };
+  }
+
+  async get_job_thumbnail(_jobId: string): Promise<string> {
+    return '';
+  }
+
+  async get_preview_frame(_videoPathOrJobId: string): Promise<string> {
+    return '';
+  }
+
+  async validate_rtmlib_settings(
+    mode: string,
+    poseModel: string,
+    inputSize: string,
+    _detector: string
+  ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }> {
+    const p = poseModel === 'mode' ? (mode === 'lightweight' ? 's' : mode === 'balanced' ? 'm' : 'm') : poseModel;
+    const res = inputSize === 'mode' ? (p === 'x' ? '384x288' : '256x192') : inputSize;
+    if (['t', 's', 'm'].includes(p) && res !== '256x192') {
+      return { valid: false, error: `RTMPose-${p.toUpperCase()} は ${res} に対応していません。使用可能: 256x192` };
+    }
+    if (p === 'x' && res !== '384x288') {
+      return { valid: false, error: `RTMPose-X は ${res} に対応していません。使用可能: 384x288` };
+    }
+    return { valid: true };
+  }
+
+  async get_output_preview_names(folderPath: string): Promise<Record<string, string>> {
+    const base = folderPath.split('\\').pop() || folderPath.split('/').pop() || 'output';
+    return {
+      OUTPUT_VIDEO_NAME: `${base}.mp4`,
+      OUTPUT_YOLO_VIDEO_NAME: `${base}-yolo.mp4`,
+      OUTPUT_CSV_NAME: `${base}.csv`,
+      OUTPUT_METADATA_NAME: `${base}_metadata.txt`,
+    };
+  }
+
+  private _emitQueueUpdate(): void {
+    this._emitEvent('pywebview:queue-update', {
+      jobs: [...this._jobs],
+      active_job_id: this._activeJobId,
+      queue_active: this._isProcessing,
+    });
+  }
+
+  private _emitLog(jobId: string, line: string): void {
+    this._emitEvent('pywebview:job-log', { jobId, logLine: line });
+  }
+
+  private _emitEvent(name: string, detail: any): void {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+}
+
+export const browserMockBackend = new BrowserMockBackend();

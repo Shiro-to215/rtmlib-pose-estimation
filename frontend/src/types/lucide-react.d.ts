@@ -19,13 +19,23 @@ declare module 'lucide-react' {
   export const FolderOpen: LucideIcon;
   export const FileVideo: LucideIcon;
   export const AlertCircle: LucideIcon;
+  export const AlertTriangle: LucideIcon;
   export const Info: LucideIcon;
   export const CheckCircle: LucideIcon;
   export const Eye: LucideIcon;
   export const Edit: LucideIcon;
   export const ChevronDown: LucideIcon;
   export const ChevronRight: LucideIcon;
+  export const ChevronLeft: LucideIcon;
   export const HelpCircle: LucideIcon;
   export const ExternalLink: LucideIcon;
   export const RotateCcw: LucideIcon;
+  export const Film: LucideIcon;
+  export const Pause: LucideIcon;
+  export const Search: LucideIcon;
+  export const Sliders: LucideIcon;
+  export const SlidersHorizontal: LucideIcon;
+  export const FileText: LucideIcon;
+  export const CheckSquare: LucideIcon;
+  export const Save: LucideIcon;
 }
