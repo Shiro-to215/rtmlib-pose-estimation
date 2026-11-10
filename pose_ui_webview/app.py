@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import queue
+import shutil
 import sys
 import tempfile
 import threading
@@ -289,6 +290,41 @@ def launch_webview_gui(
     backend_api.set_window(window)
 
     # Window lifecycle hooks
+    _dnd_bound = [False]
+
+    def _on_dom_drop(event: Any) -> None:
+        try:
+            data_transfer = (event or {}).get("dataTransfer") or {}
+            files = data_transfer.get("files") or []
+            video_exts = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".webm"}
+            dropped_paths: list[str] = []
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                raw_path = item.get("pywebviewFullPath") or item.get("path") or ""
+                if raw_path and Path(raw_path).suffix.lower() in video_exts:
+                    dropped_paths.append(str(Path(raw_path).resolve()))
+            if dropped_paths:
+                payload = json.dumps({"paths": dropped_paths}, ensure_ascii=False)
+                window.evaluate_js(
+                    f"window.dispatchEvent(new CustomEvent('pywebview:files-dropped', {{ detail: {payload} }}));"
+                )
+        except Exception as exc:
+            logger.debug("Native file drop handler ignored: %s", exc)
+
+    def on_loaded() -> None:
+        if _dnd_bound[0]:
+            return
+        try:
+            from webview.dom import DOMEventHandler
+
+            doc = window.dom.document
+            if hasattr(doc.events, "drop"):
+                doc.events.drop += DOMEventHandler(_on_dom_drop, True, False)
+                _dnd_bound[0] = True
+        except Exception as exc:
+            logger.debug("Native DnD registration skipped: %s", exc)
+
     def on_shown() -> None:
         thumbnail_daemon.enqueue_jobs(backend_api.reservations.jobs)
 
@@ -319,17 +355,22 @@ def launch_webview_gui(
         thumbnail_daemon.stop()
         backend_api.shutdown()
 
+    window.events.loaded += on_loaded
     window.events.shown += on_shown
     window.events.closing += on_closing
     window.events.closed += on_closed
 
     # Start PyWebView loop (Edge WebView2 on Windows)
+    # Use a per-launch temporary WebView2 user-data directory when no explicit
+    # storage_path is provided to prevent 0x800700AA lock contention across launches.
     use_http_server = bool(target_url and not target_url.startswith("http"))
-    cache_path = (
-        storage_path
-        or os.environ.get("PYWEBVIEW_STORAGE_PATH")
-        or os.path.join(tempfile.gettempdir(), "pywebview_cache")
-    )
+    explicit_storage = storage_path or os.environ.get("PYWEBVIEW_STORAGE_PATH")
+    auto_cache_dir = None
+    if explicit_storage:
+        cache_path = explicit_storage
+    else:
+        auto_cache_dir = tempfile.mkdtemp(prefix="rtmpose_webview_")
+        cache_path = auto_cache_dir
 
     def _startup_callback() -> None:
         if on_startup:
@@ -342,10 +383,14 @@ def launch_webview_gui(
                 except Exception:
                     pass
 
-    webview.start(
-        _startup_callback if on_startup else None,
-        debug=debug,
-        http_server=use_http_server,
-        storage_path=cache_path,
-        private_mode=False,
-    )
+    try:
+        webview.start(
+            _startup_callback if on_startup else None,
+            debug=debug,
+            http_server=use_http_server,
+            storage_path=cache_path,
+            private_mode=False,
+        )
+    finally:
+        if auto_cache_dir:
+            shutil.rmtree(auto_cache_dir, ignore_errors=True)

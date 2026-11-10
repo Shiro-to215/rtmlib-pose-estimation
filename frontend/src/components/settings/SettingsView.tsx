@@ -39,6 +39,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSaveDefault,
   onSaveJob,
 }) => {
+  const initialThumbPath = React.useMemo(() => {
+    const tRoot = job?.settings?.THUMBNAIL_ROOT ? String(job.settings.THUMBNAIL_ROOT) : '';
+    const tName = job?.settings?.THUMBNAIL_IMAGE_NAME ? String(job.settings.THUMBNAIL_IMAGE_NAME) : '';
+    if (tRoot && tName) {
+      return `${tRoot.replace(/[\\/]+$/, '')}\\${tName}`;
+    }
+    return '';
+  }, [job]);
+
   const initialData = mode === 'job' && job ? job.settings : defaultSettings;
   const { values, setFieldValue, resetToDefaults, errors, rtmlibWarning, isDirty, isValid } =
     useSettingsForm(initialData, mode);
@@ -47,12 +56,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [defaultRoot, setDefaultRoot] = useState<string>(systemInfo.output_root || '');
   const [destination, setDestination] = useState<string>(job?.output_path || '');
-  const [thumbnail, setThumbnail] = useState<string>(job?.thumbnail || '');
+  const [thumbnail, setThumbnail] = useState<string>(initialThumbPath);
   const [resetFailed, setResetFailed] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
+  React.useEffect(() => {
+    setDefaultRoot(systemInfo.output_root || '');
+  }, [systemInfo.output_root]);
+
+  React.useEffect(() => {
+    setDestination(job?.output_path || '');
+    setThumbnail(initialThumbPath);
+    setResetFailed(true);
+  }, [job, initialThumbPath]);
+
+  const hasIoPathChanges =
+    mode === 'default'
+      ? defaultRoot.trim() !== (systemInfo.output_root || '').trim()
+      : destination.trim() !== (job?.output_path || '').trim() ||
+        thumbnail.trim() !== initialThumbPath;
+
+  const canSave =
+    isValid &&
+    !isSaving &&
+    (isDirty || hasIoPathChanges || (mode === 'job' && job?.state === 'failed' && resetFailed));
+
   const handleBack = () => {
-    if (isDirty) {
+    if (isDirty || hasIoPathChanges) {
       const confirmDiscard = window.confirm('変更が保存されていません。破棄して戻りますか？');
       if (!confirmDiscard) return;
     }
@@ -71,6 +101,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         YOLO_IMAGE_SIZE: 1280,
         YOLO_CONFIDENCE: 0.2,
         YOLO_IOU: 0.5,
+        YOLO_CLASSES: [0],
+        YOLO_TRACK_ID: null,
         CROP_PADDING_RATIO: 0.25,
         KEYPOINT_THRESHOLD: 0.45,
         RTMLIB_POSE_MODEL: 'mode',
@@ -118,13 +150,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleSave = async () => {
-    if (!isValid || isSaving) return;
+    if (!canSave) return;
     setIsSaving(true);
     let success = false;
     if (mode === 'default') {
       success = await onSaveDefault(values, defaultRoot);
     } else if (job) {
-      success = await onSaveJob(job.id, values, resetFailed, destination);
+      const trimmedThumb = thumbnail.trim();
+      const savePayload: Partial<JobSettings> = { ...values };
+      if (trimmedThumb) {
+        const sepIdx = Math.max(trimmedThumb.lastIndexOf('\\'), trimmedThumb.lastIndexOf('/'));
+        savePayload.THUMBNAIL_ROOT = sepIdx >= 0 ? trimmedThumb.slice(0, sepIdx) : '';
+        savePayload.THUMBNAIL_IMAGE_NAME = sepIdx >= 0 ? trimmedThumb.slice(sepIdx + 1) : trimmedThumb;
+      } else {
+        savePayload.THUMBNAIL_ROOT = '';
+        savePayload.THUMBNAIL_IMAGE_NAME = '';
+      }
+      success = await onSaveJob(job.id, savePayload, resetFailed, destination);
     }
     setIsSaving(false);
     if (success) {
@@ -152,7 +194,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
           <div className="flex items-center gap-2">
             <h2 className="text-base font-bold text-[#1E293B] truncate max-w-md">{titleText}</h2>
-            {isDirty && (
+            { (isDirty || hasIoPathChanges) && (
               <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
                 ● 未保存の変更あり
               </span>
@@ -172,9 +214,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           <button
             onClick={handleSave}
-            disabled={!isValid || !isDirty || isSaving}
+            disabled={!canSave}
             className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${
-              isValid && isDirty && !isSaving
+              canSave
                 ? 'bg-[#0F766E] hover:bg-[#115E59] text-white shadow-sm cursor-pointer'
                 : 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed shadow-none'
             }`}

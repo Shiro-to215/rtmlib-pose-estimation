@@ -34,43 +34,64 @@ class TestPyWebViewWindowLaunch(unittest.TestCase):
             raise unittest.SkipTest(f"Production bundle not found at {cls.dist_index}")
 
     def test_launch_webview_gui_auto_closing(self):
-        """Launches launch_webview_gui pointing to dist/index.html and closes cleanly."""
+        """Launches launch_webview_gui pointing to dist/index.html and verifies React render + bridge."""
         verification_state = {
             "window_initialized": False,
             "title_matched": False,
             "dimensions_valid": False,
-            "js_evaluated": False,
+            "url": "",
+            "body_text": "",
+            "root_children": -1,
+            "bridge_ready": False,
+            "initial_data_keys": [],
+            "sandbox_blocked": False,
             "closed_cleanly": False,
         }
 
         def on_startup(window: webview.Window):
             try:
-                # 1. Verify window instance
                 if window is not None:
                     verification_state["window_initialized"] = True
 
-                # 2. Verify window title
                 if "動画姿勢推定" in (window.title or ""):
                     verification_state["title_matched"] = True
 
-                # 3. Verify window minimum dimensions
                 if window.width >= 1200 and window.height >= 675:
                     verification_state["dimensions_valid"] = True
 
-                # Wait brief moment for Edge WebView2 engine to settle
-                time.sleep(1.0)
+                # Wait for Edge WebView2 and React mount to settle (up to 4s)
+                deadline = time.time() + 4.0
+                while time.time() < deadline:
+                    time.sleep(0.4)
+                    try:
+                        url = window.get_current_url() or ""
+                        body_text = window.evaluate_js("document.body ? document.body.innerText.slice(0, 400) : ''") or ""
+                        verification_state["url"] = url
+                        verification_state["body_text"] = body_text
 
-                # 4. Evaluate simple JavaScript in the webview context
-                try:
-                    js_result = window.evaluate_js("1 + 1")
-                    if js_result == 2:
-                        verification_state["js_evaluated"] = True
-                except Exception as ex:
-                    print(f"[test_pywebview_launch] JS evaluation note: {ex}")
-                    # In some CI/headless environments evaluate_js may return None if DOM still loading
-                    verification_state["js_evaluated"] = True
+                        if "ERR_NETWORK_ACCESS_DENIED" in body_text or "インターネット アクセスがブロックされています" in body_text:
+                            verification_state["sandbox_blocked"] = True
+                            break
 
-                # 5. Destroy window to trigger clean exit
+                        root_cnt = window.evaluate_js(
+                            "document.getElementById('root') ? document.getElementById('root').children.length : -1"
+                        )
+                        if isinstance(root_cnt, int):
+                            verification_state["root_children"] = root_cnt
+
+                        has_bridge = bool(
+                            window.evaluate_js("Boolean(window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_initial_data === 'function')")
+                        )
+                        verification_state["bridge_ready"] = has_bridge
+
+                        if root_cnt and root_cnt > 0 and has_bridge:
+                            # Also confirm key Japanese UI panes rendered cleanly
+                            body_text = window.evaluate_js("document.body ? document.body.innerText.slice(0, 600) : ''") or ""
+                            verification_state["body_text"] = body_text
+                            break
+                    except Exception:
+                        pass
+
                 window.destroy()
                 verification_state["closed_cleanly"] = True
             except Exception as e:
@@ -80,7 +101,6 @@ class TestPyWebViewWindowLaunch(unittest.TestCase):
                 except Exception:
                     pass
 
-        # Execute launcher with on_startup hook
         app_mod.launch_webview_gui(
             base_dir=WORKSPACE_ROOT,
             on_startup=on_startup,
@@ -88,9 +108,32 @@ class TestPyWebViewWindowLaunch(unittest.TestCase):
         )
 
         self.assertTrue(verification_state["window_initialized"], "Window was not initialized")
-        self.assertTrue(verification_state["title_matched"], f"Window title mismatch: expected '動画姿勢推定'")
+        self.assertTrue(verification_state["title_matched"], "Window title mismatch: expected '動画姿勢推定'")
         self.assertTrue(verification_state["dimensions_valid"], "Window dimensions do not meet min 1200x675")
         self.assertTrue(verification_state["closed_cleanly"], "Window did not close cleanly")
+
+        if verification_state["sandbox_blocked"]:
+            self.skipTest(
+                "Edge WebView2 loopback (127.0.0.1) is blocked by sandbox (ERR_NETWORK_ACCESS_DENIED). "
+                "Re-run outside sandbox to verify live React #root mount."
+            )
+
+        self.assertGreater(
+            verification_state["root_children"],
+            0,
+            f"React did not mount into #root (url={verification_state['url']}, body={verification_state['body_text'][:120]})",
+        )
+        self.assertTrue(verification_state["bridge_ready"], "window.pywebview.api bridge was not injected")
+        for expected_ui_text in ("解析中", "予約リスト", "解析開始"):
+            self.assertIn(
+                expected_ui_text,
+                verification_state["body_text"],
+                f"Expected React UI text '{expected_ui_text}' not found in rendered DOM",
+            )
+        print(
+            f"[test_pywebview_launch] LIVE UI VERIFIED: url={verification_state['url']}, "
+            f"root_children={verification_state['root_children']}, bridge_ready={verification_state['bridge_ready']}"
+        )
 
 
 if __name__ == "__main__":

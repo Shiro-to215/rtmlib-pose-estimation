@@ -9,6 +9,8 @@ import {
 } from './types/models';
 import {
   getBackendApi,
+  isPyWebViewHost,
+  subscribeToFilesDropped,
   subscribeToJobFinished,
   subscribeToJobLog,
   subscribeToJobProgress,
@@ -16,6 +18,7 @@ import {
   subscribeToQueueStatus,
   subscribeToQueueUpdate,
   subscribeToThumbnail,
+  waitForBackendApi,
 } from './api/pywebview';
 import { MainLayout } from './components/layout/MainLayout';
 import { RightWorkspaceShell } from './components/layout/RightWorkspaceShell';
@@ -52,21 +55,66 @@ export const App: React.FC = () => {
   const [selectedJobForSettings, setSelectedJobForSettings] = useState<ReservationJob | null>(null);
   const [addInitialVideos, setAddInitialVideos] = useState<string[]>([]);
 
-  // Initial Data Fetch
+  // Initial Data Fetch (waits for pywebviewready before falling back to dev mock)
   useEffect(() => {
-    const api = getBackendApi();
-    api.get_initial_data().then((payload: InitialDataPayload) => {
-      if (payload) {
-        setQueue(payload.queue || []);
-        setDefaultSettings(payload.settings || {});
-        if (payload.system) {
-          setSystemInfo(payload.system);
-          setIsProcessing(Boolean(payload.system.is_processing || payload.system.queue_active));
-          setActiveJobId(payload.system.current_job_id || payload.system.active_job_id || null);
-        }
+    let cancelled = false;
+    const applyInitialPayload = (payload: InitialDataPayload) => {
+      if (cancelled || !payload) return;
+      setQueue(payload.queue || []);
+      setDefaultSettings(payload.settings || {});
+      if (payload.system) {
+        setSystemInfo(payload.system);
+        setIsProcessing(Boolean(payload.system.is_processing || payload.system.queue_active));
+        setActiveJobId(payload.system.current_job_id || payload.system.active_job_id || null);
       }
+    };
+
+    waitForBackendApi().then((api) => {
+      api.get_initial_data().then(applyInitialPayload).catch((err) => {
+        console.error('Failed to fetch initial data:', err);
+      });
     });
+
+    const handleLateBridgeReady = () => {
+      if (isPyWebViewHost()) {
+        getBackendApi().get_initial_data().then(applyInitialPayload).catch((err) => {
+          console.error('Failed to refresh initial data on pywebviewready:', err);
+        });
+      }
+    };
+    window.addEventListener('pywebviewready', handleLateBridgeReady);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pywebviewready', handleLateBridgeReady);
+    };
   }, []);
+
+  // Prevent browser navigation on external file drop and route native drops cleanly
+  useEffect(() => {
+    const preventNav = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventNav);
+    window.addEventListener('drop', preventNav);
+
+    const unsubDropped = subscribeToFilesDropped((paths) => {
+      if (!paths || paths.length === 0) return;
+      setAddInitialVideos((prev) => {
+        if (activeView === 'add') {
+          return Array.from(new Set([...prev, ...paths]));
+        }
+        return paths;
+      });
+      setActiveView((curr) => (curr === 'queue' || curr === 'add' ? 'add' : curr));
+    });
+
+    return () => {
+      window.removeEventListener('dragover', preventNav);
+      window.removeEventListener('drop', preventNav);
+      unsubDropped();
+    };
+  }, [activeView]);
 
   // Telemetry Subscriptions (Dual Event Delivery)
   useEffect(() => {
@@ -114,7 +162,7 @@ export const App: React.FC = () => {
 
     const unsubQueueUpdate = subscribeToQueueUpdate((jobs, activeId, queueActive) => {
       setQueue(jobs);
-      if (activeId !== null && activeId !== undefined) {
+      if (activeId !== undefined) {
         setActiveJobId(activeId);
       }
       if (queueActive !== undefined) {

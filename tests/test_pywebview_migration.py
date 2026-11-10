@@ -1045,6 +1045,9 @@ class TestPyWebViewDesktopLaunchAndLifecycle(unittest.TestCase):
             "window_initialized": False,
             "title_matched": False,
             "dimensions_valid": False,
+            "root_children": -1,
+            "bridge_ready": False,
+            "sandbox_blocked": False,
             "closed_cleanly": False,
         }
 
@@ -1059,8 +1062,27 @@ class TestPyWebViewDesktopLaunchAndLifecycle(unittest.TestCase):
                 if window.width >= 1200 and window.height >= 675:
                     verification_state["dimensions_valid"] = True
 
-                # Allow webview engine a brief settling window
-                time.sleep(1.0)
+                deadline = time.time() + 4.0
+                while time.time() < deadline:
+                    time.sleep(0.4)
+                    try:
+                        body_text = window.evaluate_js("document.body ? document.body.innerText.slice(0, 400) : ''") or ""
+                        if "ERR_NETWORK_ACCESS_DENIED" in body_text or "インターネット アクセスがブロックされています" in body_text:
+                            verification_state["sandbox_blocked"] = True
+                            break
+                        root_cnt = window.evaluate_js(
+                            "document.getElementById('root') ? document.getElementById('root').children.length : -1"
+                        )
+                        if isinstance(root_cnt, int):
+                            verification_state["root_children"] = root_cnt
+                        has_bridge = bool(
+                            window.evaluate_js("Boolean(window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_initial_data === 'function')")
+                        )
+                        verification_state["bridge_ready"] = has_bridge
+                        if root_cnt and root_cnt > 0 and has_bridge:
+                            break
+                    except Exception:
+                        pass
 
                 # Cleanly destroy window
                 window.destroy()
@@ -1082,6 +1104,10 @@ class TestPyWebViewDesktopLaunchAndLifecycle(unittest.TestCase):
         self.assertTrue(verification_state["title_matched"], "Window title mismatch")
         self.assertTrue(verification_state["dimensions_valid"], "Window dimensions do not meet min 1200x675")
         self.assertTrue(verification_state["closed_cleanly"], "Window did not close cleanly")
+        if verification_state["sandbox_blocked"]:
+            self.skipTest("Edge WebView2 loopback blocked by sandbox (ERR_NETWORK_ACCESS_DENIED)")
+        self.assertGreater(verification_state["root_children"], 0, "React did not mount into #root")
+        self.assertTrue(verification_state["bridge_ready"], "window.pywebview.api not ready")
 
 
 class CustomTestResult(unittest.TextTestResult):

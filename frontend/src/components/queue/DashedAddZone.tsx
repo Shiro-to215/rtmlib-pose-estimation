@@ -26,17 +26,15 @@ export const DashedAddZone: React.FC<DashedAddZoneProps> = ({ onClick, onDropVid
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       for (let i = 0; i < e.dataTransfer.files.length; i++) {
         const file = e.dataTransfer.files[i];
-        const path = (file as any).path || file.name;
-        const ext = '.' + path.split('.').pop()?.toLowerCase();
-        if (videoExts.includes(ext)) {
+        const path = (file as any).pywebviewFullPath || (file as any).path || '';
+        const ext = path ? '.' + path.split('.').pop()?.toLowerCase() : '';
+        if (path && videoExts.includes(ext)) {
           paths.push(path);
         }
       }
     }
     if (paths.length > 0) {
       onDropVideos(paths);
-    } else {
-      onClick();
     }
   };
 

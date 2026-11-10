@@ -17,6 +17,57 @@ export function isPyWebViewHost(): boolean {
 }
 
 /**
+ * Waits for window.pywebview.api injection (`pywebviewready`) before falling back to browser mock
+ */
+export async function waitForBackendApi(timeoutMs = 1500): Promise<BackendApi> {
+  if (isPyWebViewHost()) {
+    return window.pywebview!.api;
+  }
+  if (typeof window === 'undefined') {
+    return browserMockBackend;
+  }
+
+  return new Promise<BackendApi>((resolve) => {
+    let settled = false;
+    let pollTimer: number | undefined;
+    let timeoutTimer: number | undefined;
+
+    const cleanup = () => {
+      window.removeEventListener('pywebviewready', onReady);
+      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+      if (timeoutTimer !== undefined) window.clearTimeout(timeoutTimer);
+    };
+
+    const tryResolveReal = () => {
+      if (!settled && isPyWebViewHost()) {
+        settled = true;
+        cleanup();
+        resolve(window.pywebview!.api);
+        return true;
+      }
+      return false;
+    };
+
+    const onReady = () => {
+      tryResolveReal();
+    };
+
+    window.addEventListener('pywebviewready', onReady);
+    pollTimer = window.setInterval(() => {
+      tryResolveReal();
+    }, 40);
+
+    timeoutTimer = window.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        resolve(isPyWebViewHost() ? window.pywebview!.api : browserMockBackend);
+      }
+    }, timeoutMs);
+  });
+}
+
+/**
  * Retrieves the native BackendApi or falls back to BrowserMockBackend for standalone dev
  */
 export function getBackendApi(): BackendApi {
@@ -181,29 +232,51 @@ export function subscribeToJobStarted(
 }
 
 export function subscribeToQueueUpdate(
-  callback: (jobs: ReservationJob[], activeJobId: string | null, queueActive: boolean) => void
+  callback: (jobs: ReservationJob[], activeJobId?: string | null, queueActive?: boolean) => void
 ): () => void {
   const dedup = new EventDeduplicator(80);
-  const emit = (jobs: ReservationJob[], activeJobId: string | null, queueActive: boolean) => {
-    const signature = `queue:${activeJobId}:${queueActive}:${jobs?.length ?? 0}:${jobs?.map((j) => `${j.id}_${j.state}`).join(',')}`;
+  const emit = (
+    jobs: ReservationJob[],
+    activeJobId: string | null | undefined,
+    queueActive: boolean | undefined,
+    source: 'event' | 'legacy'
+  ) => {
+    const jobsSig = jobs?.map((j) => `${j.id}_${j.state}_${j.output_path}`).join(',') ?? '';
+    const signature = `queue:${source}:${activeJobId ?? ''}:${queueActive ?? ''}:${jobs?.length ?? 0}:${jobsSig}`;
     if (dedup.isDuplicate(signature)) return;
     callback(jobs, activeJobId, queueActive);
   };
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
     if (detail) {
-      emit(detail.jobs, detail.active_job_id ?? null, detail.queue_active ?? false);
+      emit(detail.jobs, detail.active_job_id ?? null, detail.queue_active, 'event');
     }
   };
   window.addEventListener('pywebview:queue-update', handler);
   const oldFn = window.onQueueUpdated;
   window.onQueueUpdated = (jobs) => {
-    emit(jobs, null, false);
+    // Legacy callback carries jobs only; avoid clobbering activeJobId/queueActive with null/false
+    emit(jobs, undefined, undefined, 'legacy');
     if (oldFn) oldFn(jobs);
   };
   return () => {
     window.removeEventListener('pywebview:queue-update', handler);
     window.onQueueUpdated = oldFn;
+  };
+}
+
+export function subscribeToFilesDropped(callback: (paths: string[]) => void): () => void {
+  const dedup = new EventDeduplicator(120);
+  const handler = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    const paths: string[] = Array.isArray(detail?.paths) ? detail.paths : [];
+    if (paths.length === 0) return;
+    if (dedup.isDuplicate(`drop:${paths.join('|')}`)) return;
+    callback(paths);
+  };
+  window.addEventListener('pywebview:files-dropped', handler);
+  return () => {
+    window.removeEventListener('pywebview:files-dropped', handler);
   };
 }
 

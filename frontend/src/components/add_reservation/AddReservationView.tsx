@@ -35,6 +35,13 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
 
   const isMulti = videos.length > 1;
 
+  // Merge newly dropped initialVideos when already inside AddReservationView
+  useEffect(() => {
+    if (initialVideos && initialVideos.length > 0) {
+      setVideos((prev) => Array.from(new Set([...prev, ...initialVideos])));
+    }
+  }, [initialVideos]);
+
   // Auto-sync singleDest when 1 video is present and user hasn't explicitly typed custom path
   useEffect(() => {
     if (videos.length === 1 && !customDestTouched) {
@@ -137,9 +144,9 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       for (let i = 0; i < e.dataTransfer.files.length; i++) {
         const file = e.dataTransfer.files[i];
-        const path = (file as any).path || file.name;
-        const ext = '.' + path.split('.').pop()?.toLowerCase();
-        if (videoExts.includes(ext)) {
+        const path = (file as any).pywebviewFullPath || (file as any).path || '';
+        const ext = path ? '.' + path.split('.').pop()?.toLowerCase() : '';
+        if (path && videoExts.includes(ext)) {
           paths.push(path);
         }
       }
