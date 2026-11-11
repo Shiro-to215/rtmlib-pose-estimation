@@ -15,7 +15,6 @@ yolo11*.pt
 tools/
 .node/
 
-# Frontend dependencies and build output
+# Frontend dependencies (dist/ is tracked so end users do not need Node.js)
 frontend/node_modules/
-frontend/dist/
 

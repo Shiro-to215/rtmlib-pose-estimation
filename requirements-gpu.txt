@@ -1,5 +1,19 @@
-# Windows / NVIDIA, CUDA 13.0 (install after requirements.txt; see README.md).
+# Windows / NVIDIA GPU (CUDA 13.0) 専用パッケージ一覧
+# 実行手順:
+#   1) python -m pip install -r requirements-gpu.txt
+#   2) python -m pip install --no-deps rtmlib==0.0.16
+# ※ rtmlib==0.0.16 はメタデータ上 CPU版 onnxruntime を要求するため --no-deps で導入します。
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.14.1+cu130
 torchvision==0.29.1+cu130
 onnxruntime-gpu==1.31.1
+ultralytics>=8.3
+opencv-python>=4.8
+opencv-contrib-python>=4.8
+numpy>=1.24
+tqdm>=4.60
+lap>=0.5.12
+Pillow>=10.0
+pywebview>=6.0
+customtkinter>=5.2
+tkinterdnd2>=0.4
