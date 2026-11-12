@@ -588,6 +588,7 @@ def is_cuda_oom_error(exc: BaseException) -> bool:
         "cudaerrormemoryallocation",
         "bfcarena",
         "failed to allocate memory",
+        "memory allocation failed with oom",
         "cublas_status_alloc_failed",
         "cudnn_status_alloc_failed",
     )
@@ -595,6 +596,9 @@ def is_cuda_oom_error(exc: BaseException) -> bool:
 
 
 def _clear_cuda_cache() -> None:
+    import gc
+
+    gc.collect()
     try:
         import torch
 
@@ -602,6 +606,115 @@ def _clear_cuda_cache() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+def _cuda_device_index(device: str) -> int | None:
+    text = str(device or "").strip().lower()
+    if text == "cuda":
+        return 0
+    if text.startswith("cuda:") and text[5:].isdigit():
+        return int(text[5:])
+    return None
+
+
+def _get_cuda_free_total_gb(device: str) -> tuple[float, float] | None:
+    idx = _cuda_device_index(device)
+    if idx is None:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free_b, total_b = torch.cuda.mem_get_info(idx)
+        return free_b / (1024**3), total_b / (1024**3)
+    except Exception:
+        return None
+
+
+def configure_cuda_memory_fraction(device: str) -> float | None:
+    """Cap PyTorch CUDA allocations to physical free VRAM so Windows WDDM fails fast instead of swapping."""
+    idx = _cuda_device_index(device)
+    if idx is None:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free_b, total_b = torch.cuda.mem_get_info(idx)
+        reserved_b = torch.cuda.memory_reserved(idx)
+        if total_b <= 0:
+            return None
+        budget_b = reserved_b + free_b * 0.90
+        frac = min(0.95, max(0.25, budget_b / total_b))
+        torch.cuda.set_per_process_memory_fraction(frac, idx)
+        return frac
+    except Exception:
+        return None
+
+
+def _yolo_model_vram_factor(model_name: str) -> float:
+    stem = Path(str(model_name)).stem.lower()
+    for suffix, factor in (("n", 0.45), ("s", 0.65), ("m", 1.0), ("l", 1.25), ("x", 1.55)):
+        if stem.endswith(suffix):
+            return factor
+    return 1.0
+
+
+def cap_yolo_batch_by_vram(
+    requested: int,
+    device: str,
+    model_name: str,
+    imgsz: int,
+) -> int:
+    """Cap YOLO batch size conservatively from remaining free VRAM to prevent WDDM swap hangs."""
+    if requested <= 1:
+        return requested
+    mem_info = _get_cuda_free_total_gb(device)
+    if mem_info is None:
+        return requested
+    free_gb, _ = mem_info
+    usable_gb = max(0.4, free_gb * 0.85 - 0.4)
+    model_factor = _yolo_model_vram_factor(model_name)
+    pixel_factor = (max(int(imgsz), 320) / 640.0) ** 2
+    est_gb_per_frame = 0.070 * model_factor * pixel_factor
+    max_safe = max(1, int(usable_gb / max(est_gb_per_frame, 1e-4)))
+    if requested > max_safe:
+        print(
+            f"YOLO: 利用可能VRAM ({free_gb:.1f} GB) に合わせてバッチサイズを "
+            f"{requested} -> {max_safe} に自動調整しました",
+            flush=True,
+        )
+        return max_safe
+    return requested
+
+
+def cap_rtmpose_batch_by_vram(requested: int, device: str, pose_model) -> int:
+    """Cap RTMPose batch size conservatively from remaining free VRAM."""
+    if requested <= 1:
+        return requested
+    mem_info = _get_cuda_free_total_gb(device)
+    if mem_info is None:
+        return requested
+    free_gb, _ = mem_info
+    input_size = getattr(pose_model, "model_input_size", (192, 256))
+    try:
+        in_w, in_h = int(input_size[0]), int(input_size[1])
+    except (TypeError, ValueError, IndexError):
+        in_w, in_h = 192, 256
+    usable_gb = max(0.4, free_gb * 0.85 - 0.4)
+    area_factor = max(1, in_w * in_h) / (192.0 * 256.0)
+    est_gb_per_frame = 0.028 * area_factor
+    max_safe = max(1, int(usable_gb / max(est_gb_per_frame, 1e-4)))
+    if requested > max_safe:
+        print(
+            f"RTMPose: 利用可能VRAM ({free_gb:.1f} GB) に合わせてバッチサイズを "
+            f"{requested} -> {max_safe} に自動調整しました",
+            flush=True,
+        )
+        return max_safe
+    return requested
 
 
 def supports_dynamic_batch(pose_model) -> tuple[bool, object]:
@@ -1580,8 +1693,12 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
             flush=True,
         )
 
+    configure_cuda_memory_fraction(device)
     detector = YOLO(YOLO_MODEL)
     effective_batch = resolve_effective_batch_size(YOLO_BATCH_SIZE, device, "YOLO")
+    effective_batch = cap_yolo_batch_by_vram(
+        effective_batch, device, YOLO_MODEL, YOLO_IMAGE_SIZE
+    )
     print(f"YOLOバッチサイズ: {effective_batch}", flush=True)
     tracks = {}
     next_id = 0
@@ -1605,6 +1722,67 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
             verbose=False,
         )
 
+    def _emit_yolo_results(frames_chunk, results_chunk) -> None:
+        nonlocal next_id, processed_frames, last_progress
+        for frame, result in zip(frames_chunk, results_chunk):
+            detections, next_id = stabilize_yolo_ids(
+                result.boxes,
+                tracks,
+                next_id,
+            )
+            frame_detections.append(detections)
+            writer_worker.write(draw_stable_yolo_tracks(frame, detections, copy=False))
+            processed_frames += 1
+            if total_frames > 0:
+                progress = min(49, int(processed_frames * 50 / total_frames))
+                if progress > last_progress:
+                    print(f"PROGRESS:{progress}:YOLO", flush=True)
+                    last_progress = progress
+
+    def _run_yolo_chunk(frames_chunk) -> None:
+        nonlocal effective_batch
+        if not frames_chunk:
+            return
+        if effective_batch > 1 and len(frames_chunk) > 1:
+            oom_occurred = False
+            try:
+                results = detector.track(
+                    frames_chunk,
+                    device=device,
+                    persist=True,
+                    tracker=YOLO_TRACKER,
+                    imgsz=YOLO_IMAGE_SIZE,
+                    conf=YOLO_CONFIDENCE,
+                    iou=YOLO_IOU,
+                    classes=YOLO_CLASSES,
+                    max_det=30,
+                    batch=len(frames_chunk),
+                    verbose=False,
+                )
+            except Exception as exc:
+                if not is_cuda_oom_error(exc):
+                    raise
+                oom_occurred = True
+            if not oom_occurred:
+                _emit_yolo_results(frames_chunk, results)
+                return
+
+            # Retry outside the except block so exc.__traceback__ releases GPU tensors first.
+            _clear_cuda_cache()
+            next_batch = max(1, min(effective_batch, len(frames_chunk)) // 2)
+            print(
+                f"YOLO: CUDAメモリ不足（OOM）が発生したため、バッチサイズを {next_batch} に下げて続行します。",
+                flush=True,
+            )
+            effective_batch = next_batch
+            for start in range(0, len(frames_chunk), next_batch):
+                _run_yolo_chunk(frames_chunk[start : start + next_batch])
+            return
+
+        for single_frame in frames_chunk:
+            results = [_track_single(single_frame)[0]]
+            _emit_yolo_results([single_frame], results)
+
     queue_depth = max(8, min(48, effective_batch + 8))
     reader = AsyncFrameReader(capture, max_queue_size=queue_depth)
     writer_worker = AsyncVideoWriter(writer, max_queue_size=max(8, min(32, effective_batch + 8)))
@@ -1614,49 +1792,7 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
             batch_frames = reader.read_batch(effective_batch)
             if not batch_frames:
                 break
-
-            if effective_batch > 1 and len(batch_frames) > 1:
-                try:
-                    results = detector.track(
-                        batch_frames,
-                        device=device,
-                        persist=True,
-                        tracker=YOLO_TRACKER,
-                        imgsz=YOLO_IMAGE_SIZE,
-                        conf=YOLO_CONFIDENCE,
-                        iou=YOLO_IOU,
-                        classes=YOLO_CLASSES,
-                        max_det=30,
-                        batch=len(batch_frames),
-                        verbose=False,
-                    )
-                except Exception as exc:
-                    if not is_cuda_oom_error(exc):
-                        raise
-                    print(
-                        "YOLO: CUDAメモリ不足（OOM）が発生したため、バッチサイズを 1 にフォールバックして続行します。",
-                        flush=True,
-                    )
-                    _clear_cuda_cache()
-                    effective_batch = 1
-                    results = [_track_single(f)[0] for f in batch_frames]
-            else:
-                results = [_track_single(f)[0] for f in batch_frames]
-
-            for frame, result in zip(batch_frames, results):
-                detections, next_id = stabilize_yolo_ids(
-                    result.boxes,
-                    tracks,
-                    next_id,
-                )
-                frame_detections.append(detections)
-                writer_worker.write(draw_stable_yolo_tracks(frame, detections, copy=False))
-                processed_frames += 1
-                if total_frames > 0:
-                    progress = min(49, int(processed_frames * 50 / total_frames))
-                    if progress > last_progress:
-                        print(f"PROGRESS:{progress}:YOLO", flush=True)
-                        last_progress = progress
+            _run_yolo_chunk(batch_frames)
     except BaseException:
         aborted = True
         raise
@@ -1669,6 +1805,8 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
             finally:
                 capture.release()
                 writer.release()
+                del detector
+                _clear_cuda_cache()
     print(f"YOLO処理フレーム数: {processed_frames}（動画情報の値: {total_frames}）", flush=True)
     print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
@@ -1733,6 +1871,9 @@ def run_analysis() -> None:
 
     effective_rtmpose_batch = resolve_effective_batch_size(
         RTMPOSE_BATCH_SIZE, pose_device, "RTMPose"
+    )
+    effective_rtmpose_batch = cap_rtmpose_batch_by_vram(
+        effective_rtmpose_batch, pose_device, pose_model
     )
     if effective_rtmpose_batch > 1:
         is_dynamic, dim_info = supports_dynamic_batch(pose_model)
@@ -1879,27 +2020,40 @@ def run_analysis() -> None:
                         (buffered[pos][1], buffered[pos][2]) for pos in valid_positions
                     ]
                     if effective_rtmpose_batch > 1:
-                        try:
-                            inferred = infer_pose_batch(
-                                pose_model,
-                                batch_items,
-                                fixed_batch_size=effective_rtmpose_batch,
-                                batch_buffer=batch_buffer,
-                            )
-                        except Exception as exc:
-                            if not is_cuda_oom_error(exc):
-                                raise
-                            print(
-                                "RTMPose: CUDAメモリ不足（OOM）が発生したため、バッチサイズを 1 にフォールバックして続行します。",
-                                flush=True,
-                            )
-                            batch_buffer.clear()
-                            _clear_cuda_cache()
-                            effective_rtmpose_batch = 1
-                            inferred = [
+                        def _run_pose_chunk(items_chunk):
+                            nonlocal effective_rtmpose_batch
+                            if effective_rtmpose_batch > 1:
+                                oom_occurred = False
+                                try:
+                                    return infer_pose_batch(
+                                        pose_model,
+                                        items_chunk,
+                                        fixed_batch_size=effective_rtmpose_batch,
+                                        batch_buffer=batch_buffer,
+                                    )
+                                except Exception as exc:
+                                    if not is_cuda_oom_error(exc):
+                                        raise
+                                    oom_occurred = True
+                                if oom_occurred:
+                                    batch_buffer.clear()
+                                    _clear_cuda_cache()
+                                    next_batch = max(1, min(effective_rtmpose_batch, len(items_chunk)) // 2)
+                                    print(
+                                        f"RTMPose: CUDAメモリ不足（OOM）が発生したため、バッチサイズを {next_batch} に下げて続行します。",
+                                        flush=True,
+                                    )
+                                    effective_rtmpose_batch = next_batch
+                                    out = []
+                                    for start in range(0, len(items_chunk), next_batch):
+                                        out.extend(_run_pose_chunk(items_chunk[start : start + next_batch]))
+                                    return out
+                            return [
                                 infer_pose_single(pose_model, frm, box)
-                                for frm, box in batch_items
+                                for frm, box in items_chunk
                             ]
+
+                        inferred = _run_pose_chunk(batch_items)
                     else:
                         inferred = [
                             infer_pose_single(pose_model, frm, box)
