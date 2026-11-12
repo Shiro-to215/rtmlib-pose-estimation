@@ -1138,6 +1138,50 @@ def create_pose_model(device: str):
     return model
 
 
+MPEG4_MAX_TIMEBASE_DENOMINATOR = 65535
+
+
+def sanitize_mp4v_fps(fps: float) -> float:
+    """Return an FPS whose 1000-based rational fits MPEG-4's 65535 denominator limit."""
+    if not math.isfinite(fps) or fps <= 0:
+        return 30.0
+    if fps > MPEG4_MAX_TIMEBASE_DENOMINATOR:
+        return float(MPEG4_MAX_TIMEBASE_DENOMINATOR)
+
+    target_milli = fps * 1000.0
+    base_milli = round(target_milli)
+    if base_milli <= 0:
+        return fps
+
+    def _is_valid(milli: int) -> bool:
+        return milli > 0 and (milli // math.gcd(1000, milli)) <= MPEG4_MAX_TIMEBASE_DENOMINATOR
+
+    if _is_valid(base_milli):
+        return fps
+
+    for offset in range(1, 1001):
+        candidates = [
+            milli for milli in (base_milli - offset, base_milli + offset)
+            if _is_valid(milli)
+        ]
+        if candidates:
+            best = min(candidates, key=lambda milli: abs(milli - target_milli))
+            return best / 1000.0
+
+    return float(round(fps))
+
+
+def open_mp4v_writer(output_path: Path, fps: float, width: int, height: int):
+    writer_fps = sanitize_mp4v_fps(fps)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        writer_fps,
+        (width, height),
+    )
+    return writer, writer_fps
+
+
 def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_frames=0, device="cpu"):
     capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
@@ -1146,16 +1190,16 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = progress_total_frames or int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    writer = cv2.VideoWriter(
-        str(output_yolo_video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
-    )
+    writer, writer_fps = open_mp4v_writer(output_yolo_video, fps, width, height)
     if not writer.isOpened():
         capture.release()
         raise RuntimeError(
             f"Could not create YOLO output video: {output_yolo_video.resolve()}"
+        )
+    if writer_fps != fps:
+        print(
+            f"動画書き出しFPS調整: {fps:.6f} -> {writer_fps:.3f} (mp4v制限対応)",
+            flush=True,
         )
 
     detector = YOLO(YOLO_MODEL)
@@ -1254,12 +1298,7 @@ def run_analysis() -> None:
 
     rtmlib_started_at = perf_counter()
     capture = cv2.VideoCapture(str(input_video))
-    writer = cv2.VideoWriter(
-        str(output_video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
-    )
+    writer, _ = open_mp4v_writer(output_video, fps, width, height)
     if not capture.isOpened():
         raise RuntimeError(f"Could not reopen input video: {input_video.resolve()}")
     if not writer.isOpened():
