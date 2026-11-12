@@ -359,14 +359,12 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_CSV_NAME: 'sample_dance_01.csv',
         OUTPUT_METADATA_NAME: 'sample_dance_01_metadata.txt',
         DEVICE: 'auto',
-        MODEL_MODE: 'performance',
         YOLO_MODEL: 'yolo11m.pt',
         YOLO_CLASSES: [0],
         YOLO_TRACK_ID: null,
         CSV_MAX_PERSONS: 3,
-        RTMLIB_POSE_MODEL: 'mode',
-        RTMLIB_POSE_INPUT_SIZE: 'mode',
-        RTMLIB_PERSON_DETECTOR: 'mode',
+        RTMLIB_POSE_MODEL: 'x',
+        RTMLIB_POSE_INPUT_SIZE: '384x288',
         YOLO_IMAGE_SIZE: 1280,
         YOLO_CONFIDENCE: 0.20,
         YOLO_IOU: 0.50,
@@ -406,7 +404,8 @@ class BrowserMockBackend implements BackendApi {
         LABEL_FONT_SCALE: 0.70,
       },
       summary: {
-        model_mode: 'performance',
+        pose_model: 'x',
+        pose_input_size: '384x288',
         yolo_model: 'yolo11m.pt',
         device: 'auto',
         track_id: null,
@@ -434,17 +433,16 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_CSV_NAME: 'sample_sprint.csv',
         OUTPUT_METADATA_NAME: 'sample_sprint_metadata.txt',
         DEVICE: 'auto',
-        MODEL_MODE: 'lightweight',
         YOLO_MODEL: 'yolo11s.pt',
         YOLO_CLASSES: [0],
         YOLO_TRACK_ID: 1,
         CSV_MAX_PERSONS: 1,
-        RTMLIB_POSE_MODEL: 'mode',
-        RTMLIB_POSE_INPUT_SIZE: 'mode',
-        RTMLIB_PERSON_DETECTOR: 'mode',
+        RTMLIB_POSE_MODEL: 's',
+        RTMLIB_POSE_INPUT_SIZE: '256x192',
       },
       summary: {
-        model_mode: 'lightweight',
+        pose_model: 's',
+        pose_input_size: '256x192',
         yolo_model: 'yolo11s.pt',
         device: 'auto',
         track_id: 1,
@@ -489,36 +487,30 @@ class BrowserMockBackend implements BackendApi {
         queue_active: this._isProcessing,
         active_job_id: this._activeJobId,
         choices: {
-          MODEL_MODE: ['performance', 'balanced', 'lightweight'],
           YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
           DEVICE: ['auto', 'cpu', 'cuda'],
-          RTMLIB_POSE_MODEL: ['mode', 't', 's', 'm', 'l', 'x'],
-          RTMLIB_POSE_INPUT_SIZE: ['mode', '256x192', '384x288'],
-          RTMLIB_PERSON_DETECTOR: ['mode', 'nano', 'tiny', 's', 'm', 'l', 'x'],
+          RTMLIB_POSE_MODEL: ['t', 's', 'm', 'l', 'x'],
+          RTMLIB_POSE_INPUT_SIZE: ['256x192', '384x288'],
           YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
           BACKEND: ['onnxruntime', 'opencv'],
         },
         labels: {
-          MODEL_MODE: 'モデル動作モード',
           YOLO_MODEL: 'YOLOモデル',
           DEVICE: '推論デバイス',
           RTMLIB_POSE_MODEL: 'RTMPoseモデル',
           RTMLIB_POSE_INPUT_SIZE: 'RTMPose入力解像度',
-          RTMLIB_PERSON_DETECTOR: 'RTMLib人物検出器',
           YOLO_TRACKER: 'トラッカー設定',
           BACKEND: '推論バックエンド',
         },
         groups: [
-          { title: '基本推論設定', keys: ['MODEL_MODE', 'YOLO_MODEL', 'DEVICE'] },
+          { title: '基本推論設定', keys: ['YOLO_MODEL', 'DEVICE'] },
         ],
       },
       choices: {
-        MODEL_MODE: ['performance', 'balanced', 'lightweight'],
         YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
         DEVICE: ['auto', 'cpu', 'cuda'],
-        RTMLIB_POSE_MODEL: ['mode', 't', 's', 'm', 'l', 'x'],
-        RTMLIB_POSE_INPUT_SIZE: ['mode', '256x192', '384x288'],
-        RTMLIB_PERSON_DETECTOR: ['mode', 'nano', 'tiny', 's', 'm', 'l', 'x'],
+        RTMLIB_POSE_MODEL: ['t', 's', 'm', 'l', 'x'],
+        RTMLIB_POSE_INPUT_SIZE: ['256x192', '384x288'],
         YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
         BACKEND: ['onnxruntime', 'opencv'],
       },
@@ -566,7 +558,8 @@ class BrowserMockBackend implements BackendApi {
           OUTPUT_FOLDER_NAME: stem,
         },
         summary: {
-          model_mode: settings?.MODEL_MODE || 'performance',
+          pose_model: settings?.RTMLIB_POSE_MODEL || 'x',
+          pose_input_size: settings?.RTMLIB_POSE_INPUT_SIZE || '384x288',
           yolo_model: settings?.YOLO_MODEL || 'yolo11m.pt',
           device: settings?.DEVICE || 'auto',
           track_id: settings?.YOLO_TRACK_ID ?? null,
@@ -714,18 +707,14 @@ class BrowserMockBackend implements BackendApi {
   }
 
   async validate_rtmlib_settings(
-    mode: string,
     poseModel: string,
-    inputSize: string,
-    _detector: string
+    inputSize: string
   ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }> {
-    const p = poseModel === 'mode' ? (mode === 'lightweight' ? 's' : mode === 'balanced' ? 'm' : 'm') : poseModel;
-    const res = inputSize === 'mode' ? (p === 'x' ? '384x288' : '256x192') : inputSize;
-    if (['t', 's', 'm'].includes(p) && res !== '256x192') {
-      return { valid: false, error: `RTMPose-${p.toUpperCase()} は ${res} に対応していません。使用可能: 256x192` };
+    if (['t', 's', 'm'].includes(poseModel) && inputSize !== '256x192') {
+      return { valid: false, error: `RTMPose-${poseModel.toUpperCase()} は ${inputSize} に対応していません。使用可能: 256x192` };
     }
-    if (p === 'x' && res !== '384x288') {
-      return { valid: false, error: `RTMPose-X は ${res} に対応していません。使用可能: 384x288` };
+    if (poseModel === 'x' && inputSize !== '384x288') {
+      return { valid: false, error: `RTMPose-X は ${inputSize} に対応していません。使用可能: 384x288` };
     }
     return { valid: true };
   }

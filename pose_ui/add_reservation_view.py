@@ -333,11 +333,12 @@ class AddReservationView(ctk.CTkFrame):
             self._sync_ui()
 
         yolo = str(default_settings.get("YOLO_MODEL", "")).removeprefix("yolo11").removesuffix(".pt")
-        mode = default_settings.get("MODEL_MODE", "performance")
+        pose_model = str(default_settings.get("RTMLIB_POSE_MODEL", "x"))
+        pose_size = str(default_settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"))
         device = default_settings.get("DEVICE", "auto")
         self.preset_info_label.configure(
             text=(
-                f"適用される初期設定:  姿勢推定={mode}  /  YOLO={yolo}  /  デバイス={device}\n"
+                f"適用される初期設定:  姿勢推定=RTMPose-{pose_model} ({pose_size})  /  YOLO={yolo}  /  デバイス={device}\n"
                 "※ リストへ追加したあとでも、各行の「設定」ボタンから動画ごとに変更できます。"
             )
         )

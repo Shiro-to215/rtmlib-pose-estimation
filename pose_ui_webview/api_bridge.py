@@ -84,6 +84,8 @@ def serialize_reservation(
         output_path = str(job.output)
         output_folder = job.output.name
 
+    settings = gui.normalize_legacy_rtmlib_settings(settings)
+
     for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
         if pk in settings:
             settings[pk] = str(settings[pk])
@@ -101,7 +103,8 @@ def serialize_reservation(
         "thumbnail_info": thumbnail_info,
         "settings": settings,
         "summary": {
-            "model_mode": settings.get("MODEL_MODE", "performance"),
+            "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
+            "pose_input_size": settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
             "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
             "device": settings.get("DEVICE", "auto"),
             "track_id": settings.get("YOLO_TRACK_ID"),
@@ -458,14 +461,13 @@ class BackendApi:
             for non_engine_key in ("OUTPUT_DIRECTORY", "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME"):
                 merged.pop(non_engine_key, None)
             merged.update(sanitized)
+            merged = gui.normalize_legacy_rtmlib_settings(merged)
 
             # Validate RTMLib if changed
-            mode = merged.get("MODEL_MODE", "performance")
-            pose_model = merged.get("RTMLIB_POSE_MODEL", "mode")
-            input_size = merged.get("RTMLIB_POSE_INPUT_SIZE", "mode")
-            detector = merged.get("RTMLIB_PERSON_DETECTOR", "mode")
+            pose_model = merged.get("RTMLIB_POSE_MODEL", "x")
+            input_size = merged.get("RTMLIB_POSE_INPUT_SIZE", "384x288")
             if self._resolve_rtmlib_fn:
-                self._resolve_rtmlib_fn(mode, pose_model, input_size, detector)
+                self._resolve_rtmlib_fn(pose_model, input_size)
 
             updated = self.reservations.update_job(
                 job_id=job_id,
@@ -494,20 +496,19 @@ class BackendApi:
             root = default_root or (settings.get("OUTPUT_ROOT") if isinstance(settings, dict) else None) or self.reservations.output_root
             resolved_root = str(Path(root).expanduser().resolve())
 
-            mode = settings.get("MODEL_MODE", self.default_settings.get("MODEL_MODE", "performance"))
-            pose_model = settings.get("RTMLIB_POSE_MODEL", self.default_settings.get("RTMLIB_POSE_MODEL", "mode"))
-            input_size = settings.get("RTMLIB_POSE_INPUT_SIZE", self.default_settings.get("RTMLIB_POSE_INPUT_SIZE", "mode"))
-            detector = settings.get("RTMLIB_PERSON_DETECTOR", self.default_settings.get("RTMLIB_PERSON_DETECTOR", "mode"))
-            if self._resolve_rtmlib_fn:
-                self._resolve_rtmlib_fn(mode, pose_model, input_size, detector)
-
             sanitized = self.sanitize_settings(settings)
             for job_key in JOB_SCOPED_SETTING_KEYS:
                 sanitized.pop(job_key, None)
             sanitized.pop("OUTPUT_DIRECTORY", None)
             sanitized["OUTPUT_ROOT"] = resolved_root
 
-            self.default_settings.update(sanitized)
+            merged_defaults = gui.normalize_legacy_rtmlib_settings({**self.default_settings, **sanitized})
+            pose_model = merged_defaults.get("RTMLIB_POSE_MODEL", "x")
+            input_size = merged_defaults.get("RTMLIB_POSE_INPUT_SIZE", "384x288")
+            if self._resolve_rtmlib_fn:
+                self._resolve_rtmlib_fn(pose_model, input_size)
+
+            self.default_settings = merged_defaults
             for job_key in JOB_SCOPED_SETTING_KEYS:
                 self.default_settings.pop(job_key, None)
             self.default_settings.pop("OUTPUT_DIRECTORY", None)
@@ -589,13 +590,13 @@ class BackendApi:
     # ---- 15-16. Helper Utilities ---------------------------------------------
 
     def validate_rtmlib_settings(
-        self, mode: str, pose_model: str, input_size: str, detector: str
+        self, pose_model: str, input_size: str
     ) -> dict[str, Any]:
         """Validates RTMLib combination without modifying settings."""
         if self._resolve_rtmlib_fn is None:
             return {"valid": True, "resolved": {}}
         try:
-            resolved = self._resolve_rtmlib_fn(mode, pose_model, input_size, detector)
+            resolved = self._resolve_rtmlib_fn(pose_model, input_size)
             return {"valid": True, "resolved": resolved}
         except ValueError as err:
             return {"valid": False, "error": str(err)}
@@ -694,7 +695,7 @@ class BackendApi:
             elif ym.startswith("yolo11") and ym.endswith(".pt"):
                 sanitized["YOLO_MODEL"] = ym
 
-        return sanitized
+        return gui.normalize_legacy_rtmlib_settings(sanitized)
 
     def serialize_job(self, job: Reservation) -> dict[str, Any]:
         """Serializes a single job with cached thumbnail data."""
@@ -722,10 +723,10 @@ class BackendApi:
                     for k, v in data.items():
                         if k not in JOB_SCOPED_SETTING_KEYS and k != "OUTPUT_DIRECTORY":
                             clean_defaults[k] = v
-                return clean_defaults
+                return gui.normalize_legacy_rtmlib_settings(clean_defaults)
             except Exception as exc:
                 logger.warning("Could not read settings from %s (%s); using defaults", self.settings_file, exc)
-        return clean_defaults
+        return gui.normalize_legacy_rtmlib_settings(clean_defaults)
 
     def _push_queue_update(self) -> None:
         """Pushes queue snapshot update event to webview window."""

@@ -14,7 +14,6 @@ from . import theme as t
 
 PRIMARY_KEYS = (
     "DEVICE",
-    "MODEL_MODE",
     "YOLO_MODEL",
     "CSV_MAX_PERSONS",
     "YOLO_TRACK_ID",
@@ -23,7 +22,6 @@ PRIMARY_KEYS = (
 DETECTION_DETAIL_KEYS = (
     "RTMLIB_POSE_MODEL",
     "RTMLIB_POSE_INPUT_SIZE",
-    "RTMLIB_PERSON_DETECTOR",
     "BACKEND",
     "KEYPOINT_THRESHOLD",
     "YOLO_IMAGE_SIZE",
@@ -38,13 +36,11 @@ DETECTION_DETAIL_KEYS = (
 
 FRIENDLY_LABELS: dict[str, str] = {
     "DEVICE": "実行デバイス（YOLO・姿勢推定）",
-    "MODEL_MODE": "姿勢推定モード（プリセット）",
     "YOLO_MODEL": "YOLO11 モデルサイズ",
     "CSV_MAX_PERSONS": "CSV出力の最大人数列数",
     "YOLO_TRACK_ID": "対象のYOLO追跡ID（空欄＝自動選択）",
-    "RTMLIB_POSE_MODEL": "RTMPose モデル（mode＝プリセット連動）",
-    "RTMLIB_POSE_INPUT_SIZE": "RTMPose 入力解像度（mode＝自動）",
-    "RTMLIB_PERSON_DETECTOR": "RTMLib 人物検出器 YOLOX（mode＝連動）",
+    "RTMLIB_POSE_MODEL": "RTMPose モデル",
+    "RTMLIB_POSE_INPUT_SIZE": "RTMPose 入力解像度",
     "BACKEND": "推論バックエンド",
     "KEYPOINT_THRESHOLD": "関節スコアしきい値 (KEYPOINT_THRESHOLD)",
     "YOLO_IMAGE_SIZE": "YOLO 入力解像度 (YOLO_IMAGE_SIZE)",
@@ -130,7 +126,7 @@ class SettingsView(ctk.CTkFrame):
         bool_keys: set[str],
         int_keys: set[str],
         float_keys: set[str],
-        resolve_rtmlib_fn: Callable[[str, str, str, str], dict],
+        resolve_rtmlib_fn: Callable[[str, str], dict],
         output_names_fn: Callable[[Path], dict[str, str]],
         on_back: Callable[[], None],
         on_save_default: Callable[[dict[str, Any], str], None],
@@ -508,8 +504,19 @@ class SettingsView(ctk.CTkFrame):
         return str(value)
 
     def _load_values_into_vars(self, settings: dict[str, Any]) -> None:
+        legacy_mode = str(settings.get("MODEL_MODE") or "performance")
+        legacy_map = {
+            "performance": ("x", "384x288"),
+            "balanced": ("m", "256x192"),
+            "lightweight": ("s", "256x192"),
+        }
+        mode_pose, mode_res = legacy_map.get(legacy_mode, ("x", "384x288"))
         for key, var in self.param_vars.items():
             raw = settings.get(key, self._engine_defaults[key])
+            if key == "RTMLIB_POSE_MODEL" and raw == "mode":
+                raw = mode_pose
+            elif key == "RTMLIB_POSE_INPUT_SIZE" and raw == "mode":
+                raw = mode_res
             if key in self._bool_keys:
                 var.set(bool(raw))
             else:
@@ -547,10 +554,8 @@ class SettingsView(ctk.CTkFrame):
 
         # Validate RTMPose model + resolution compatibility
         self._resolve_rtmlib_fn(
-            collected["MODEL_MODE"],
             collected["RTMLIB_POSE_MODEL"],
             collected["RTMLIB_POSE_INPUT_SIZE"],
-            collected["RTMLIB_PERSON_DETECTOR"],
         )
         return collected
 
@@ -591,6 +596,13 @@ class SettingsView(ctk.CTkFrame):
                 )
                 return
             merged = deepcopy(self._editing_job.settings)
+            for legacy_key in (
+                "MODEL_MODE",
+                "RTMLIB_PERSON_DETECTOR",
+                "RTMLIB_DETECTOR_SCORE_THRESHOLD",
+                "RTMLIB_DETECTOR_NMS_THRESHOLD",
+            ):
+                merged.pop(legacy_key, None)
             merged.update(params)
             if thumb_raw:
                 tp = Path(thumb_raw).expanduser().resolve()

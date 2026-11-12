@@ -56,7 +56,7 @@ class PoseApp:
         bool_keys: set[str],
         int_keys: set[str],
         float_keys: set[str],
-        resolve_rtmlib_fn: Callable[[str, str, str, str], dict],
+        resolve_rtmlib_fn: Callable[[str, str], dict],
         output_names_fn: Callable[[Path], dict[str, str]],
         root: ctk.CTk | None = None,
     ) -> None:
@@ -242,8 +242,19 @@ class PoseApp:
         if self.settings_file.exists():
             try:
                 saved = json.loads(self.settings_file.read_text(encoding="utf-8"))
+                legacy_mode = str(saved.get("MODEL_MODE") or "performance")
+                legacy_map = {
+                    "performance": ("x", "384x288"),
+                    "balanced": ("m", "256x192"),
+                    "lightweight": ("s", "256x192"),
+                }
+                mode_pose, mode_res = legacy_map.get(legacy_mode, ("x", "384x288"))
                 for key, val in saved.items():
                     if key in values:
+                        if key == "RTMLIB_POSE_MODEL" and val == "mode":
+                            val = mode_pose
+                        elif key == "RTMLIB_POSE_INPUT_SIZE" and val == "mode":
+                            val = mode_res
                         values[key] = str(val) if key in {"INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"} else val
             except (OSError, json.JSONDecodeError) as exc:
                 messagebox.showwarning(

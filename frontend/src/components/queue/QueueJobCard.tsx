@@ -99,7 +99,7 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
             {job.video_name}
           </span>
           <span className="text-[11px] text-[#64748B] whitespace-nowrap bg-slate-100/80 px-2 py-0.5 rounded">
-            {job.summary.model_mode} / YOLO-{yoloShort} / {job.summary.device}
+            RTMPose-{job.summary.pose_model || 'x'} ({job.summary.pose_input_size || '384x288'}) / YOLO-{yoloShort} / {job.summary.device}
           </span>
         </div>
 

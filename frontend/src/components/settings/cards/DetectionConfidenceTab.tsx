@@ -20,9 +20,8 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
   errors,
   rtmlibWarning,
 }) => {
-  const poseModelChoices = choices.RTMLIB_POSE_MODEL || ['mode', 't', 's', 'm', 'l', 'x'];
-  const poseInputChoices = choices.RTMLIB_POSE_INPUT_SIZE || ['mode', '256x192', '384x288'];
-  const detectorChoices = choices.RTMLIB_PERSON_DETECTOR || ['mode', 'nano', 'tiny', 's', 'm', 'l', 'x'];
+  const poseModelChoices = choices.RTMLIB_POSE_MODEL || ['t', 's', 'm', 'l', 'x'];
+  const poseInputChoices = choices.RTMLIB_POSE_INPUT_SIZE || ['256x192', '384x288'];
 
   return (
     <div className="space-y-4">
@@ -124,26 +123,18 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
         <div className="grid grid-cols-3 gap-3">
           <DropdownSelect
             label="RTMPose モデル (RTMLIB_POSE_MODEL)"
-            description="個別モデル（mode＝プリセット連動）"
-            value={values.RTMLIB_POSE_MODEL || 'mode'}
+            description="使用するRTMPoseモデルサイズ（t:最軽量 ～ x:最高精度）"
+            value={values.RTMLIB_POSE_MODEL || 'x'}
             options={poseModelChoices}
             onChange={(v) => setFieldValue('RTMLIB_POSE_MODEL', v)}
           />
 
           <DropdownSelect
             label="入力解像度 (RTMLIB_POSE_INPUT_SIZE)"
-            description="解像度（mode＝自動、モデル互換性検査あり）"
-            value={values.RTMLIB_POSE_INPUT_SIZE || 'mode'}
+            description="入力解像度（モデル互換性検査あり）"
+            value={values.RTMLIB_POSE_INPUT_SIZE || '384x288'}
             options={poseInputChoices}
             onChange={(v) => setFieldValue('RTMLIB_POSE_INPUT_SIZE', v)}
-          />
-
-          <DropdownSelect
-            label="RTMLib人物検出器 (RTMLIB_PERSON_DETECTOR)"
-            description="現在未使用（第1段階のYOLO11枠を直接利用）"
-            value={values.RTMLIB_PERSON_DETECTOR || 'mode'}
-            options={detectorChoices}
-            onChange={(v) => setFieldValue('RTMLIB_PERSON_DETECTOR', v)}
           />
         </div>
 
@@ -168,28 +159,6 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
             max={0.95}
             step={0.05}
             onChange={(v) => setFieldValue('KEYPOINT_THRESHOLD', parseFloat(v.toFixed(2)))}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 mt-2">
-          <SliderWithInput
-            label="内部検出器スコア (RTMLIB_DETECTOR_SCORE_THRESHOLD)"
-            description="設定保存用（現在は第1段階のYOLO11枠を直接使用するため未使用）"
-            value={values.RTMLIB_DETECTOR_SCORE_THRESHOLD ?? 0.7}
-            min={0.1}
-            max={1.0}
-            step={0.05}
-            onChange={(v) => setFieldValue('RTMLIB_DETECTOR_SCORE_THRESHOLD', parseFloat(v.toFixed(2)))}
-          />
-
-          <SliderWithInput
-            label="内部検出器NMS (RTMLIB_DETECTOR_NMS_THRESHOLD)"
-            description="設定保存用（現在は第1段階のYOLO11枠を直接使用するため未使用）"
-            value={values.RTMLIB_DETECTOR_NMS_THRESHOLD ?? 0.45}
-            min={0.1}
-            max={1.0}
-            step={0.05}
-            onChange={(v) => setFieldValue('RTMLIB_DETECTOR_NMS_THRESHOLD', parseFloat(v.toFixed(2)))}
           />
         </div>
       </div>

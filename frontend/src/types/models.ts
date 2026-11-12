@@ -3,7 +3,8 @@ export type JobState = 'pending' | 'running' | 'done' | 'failed';
 export type PhaseCode = 'IDLE' | 'STARTING' | 'YOLO' | 'RTMPose' | 'RTMLIB' | 'STOPPING' | 'DONE';
 
 export interface JobSummary {
-  model_mode: string;
+  pose_model: string;
+  pose_input_size: string;
   yolo_model: string;
   device: string;
   track_id: number | null;
@@ -20,7 +21,6 @@ export interface JobSettings {
   OUTPUT_CSV_NAME?: string;
   OUTPUT_METADATA_NAME?: string;
   DEVICE: string;
-  MODEL_MODE: string;
   YOLO_MODEL: string;
   YOLO_CLASSES: number[];
   YOLO_BATCH_SIZE?: number;
@@ -28,7 +28,6 @@ export interface JobSettings {
   CSV_MAX_PERSONS: number;
   RTMLIB_POSE_MODEL: string;
   RTMLIB_POSE_INPUT_SIZE: string;
-  RTMLIB_PERSON_DETECTOR: string;
   RTMPOSE_BATCH_SIZE?: number;
   // Overlay settings
   DRAW_SKELETON?: boolean;

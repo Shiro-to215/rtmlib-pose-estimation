@@ -66,10 +66,8 @@ export function useSettingsForm(
   // Debounced RTMLib compatibility check
   useEffect(() => {
     const timer = setTimeout(async () => {
-      const modeVal = values['MODEL_MODE'] || 'performance';
-      const poseModel = values['RTMLIB_POSE_MODEL'] || 'mode';
-      const inputSize = values['RTMLIB_POSE_INPUT_SIZE'] || 'mode';
-      const detector = values['RTMLIB_PERSON_DETECTOR'] || 'mode';
+      const poseModel = values['RTMLIB_POSE_MODEL'] || 'x';
+      const inputSize = values['RTMLIB_POSE_INPUT_SIZE'] || '384x288';
 
       // Local pre-check matrix:
       if (['t', 's', 'm'].includes(poseModel) && inputSize === '384x288') {
@@ -85,7 +83,7 @@ export function useSettingsForm(
       const api = getBackendApi();
       if (api && api.validate_rtmlib_settings) {
         try {
-          const res = await api.validate_rtmlib_settings(modeVal, poseModel, inputSize, detector);
+          const res = await api.validate_rtmlib_settings(poseModel, inputSize);
           if (!res.valid) {
             setRtmlibWarning(res.error || '無効なRTMLibモデルの組み合わせです');
             return;
@@ -99,10 +97,8 @@ export function useSettingsForm(
 
     return () => clearTimeout(timer);
   }, [
-    values['MODEL_MODE'],
     values['RTMLIB_POSE_MODEL'],
     values['RTMLIB_POSE_INPUT_SIZE'],
-    values['RTMLIB_PERSON_DETECTOR'],
   ]);
 
   const setFieldValue = (k: string, v: any) => {

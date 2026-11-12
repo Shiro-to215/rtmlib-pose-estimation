@@ -422,7 +422,7 @@ class AnalysisWorkerManager:
             if callable(self._job_serializer):
                 jobs_payload.append(self._job_serializer(j))
                 continue
-            settings = dict(j.settings)
+            settings = gui.normalize_legacy_rtmlib_settings(dict(j.settings))
             for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
                 if pk in settings:
                     settings[pk] = str(settings[pk])
@@ -439,7 +439,8 @@ class AnalysisWorkerManager:
                 "thumbnail_info": "",
                 "settings": settings,
                 "summary": {
-                    "model_mode": settings.get("MODEL_MODE", "performance"),
+                    "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
+                    "pose_input_size": settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
                     "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
                     "device": settings.get("DEVICE", "auto"),
                     "track_id": settings.get("YOLO_TRACK_ID"),

@@ -118,7 +118,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       // Restore hardcoded engine defaults
       resetToDefaults({
         DEVICE: 'auto',
-        MODEL_MODE: 'performance',
         YOLO_MODEL: 'yolo11m.pt',
         BACKEND: 'onnxruntime',
         CSV_MAX_PERSONS: 3,
@@ -130,12 +129,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         YOLO_TRACK_ID: null,
         CROP_PADDING_RATIO: 0.25,
         KEYPOINT_THRESHOLD: 0.45,
-        RTMLIB_POSE_MODEL: 'mode',
-        RTMLIB_POSE_INPUT_SIZE: 'mode',
-        RTMLIB_PERSON_DETECTOR: 'mode',
+        RTMLIB_POSE_MODEL: 'x',
+        RTMLIB_POSE_INPUT_SIZE: '384x288',
         RTMPOSE_BATCH_SIZE: 1,
-        RTMLIB_DETECTOR_SCORE_THRESHOLD: 0.7,
-        RTMLIB_DETECTOR_NMS_THRESHOLD: 0.45,
         YOLO_TRACKER: 'bytetrack.yaml',
         TARGET_LOCK_RAW_ID: true,
         TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING: true,

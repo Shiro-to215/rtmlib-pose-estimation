@@ -76,11 +76,8 @@ COCO_KEYPOINTS = [
 
 BACKEND = "onnxruntime"
 DEVICE = "auto"
-#推定モデルを設定[performance , balanced , lightweight]
-MODEL_MODE = "performance"
-RTMLIB_POSE_MODEL = "mode"
-RTMLIB_POSE_INPUT_SIZE = "mode"
-RTMLIB_PERSON_DETECTOR = "mode"
+RTMLIB_POSE_MODEL = "x"
+RTMLIB_POSE_INPUT_SIZE = "384x288"
 RTMPOSE_BATCH_SIZE = 1
 
 #各種設定
@@ -118,8 +115,8 @@ ENGINE_SETTING_NAMES = (
     "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
     "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID",
     "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
-    "BACKEND", "DEVICE", "MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-    "RTMLIB_PERSON_DETECTOR", "RTMPOSE_BATCH_SIZE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
+    "BACKEND", "DEVICE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+    "RTMPOSE_BATCH_SIZE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
     "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
@@ -152,8 +149,8 @@ GROUPS = [
                     "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
                     "TARGET_BOX_FILL_MAX_FRAMES"]),
-    ("姿勢推定・追跡", ["MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-                     "RTMLIB_PERSON_DETECTOR", "RTMPOSE_BATCH_SIZE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
+    ("姿勢推定・追跡", ["RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+                     "RTMPOSE_BATCH_SIZE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
                      "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
                      "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
                      "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
@@ -174,32 +171,29 @@ LABELS = {
     "OUTPUT_DIRECTORY": "出力先フォルダ",
     "YOLO_MODEL": "YOLOモデルサイズ",
     "YOLO_BATCH_SIZE": "YOLOバッチサイズ",
-    "MODEL_MODE": "姿勢推定モデル",
-    "RTMLIB_POSE_MODEL": "RTMPoseモデル（mode=既存モード）",
-    "RTMLIB_POSE_INPUT_SIZE": "RTMPose入力解像度（mode=モードに合わせる）",
-    "RTMLIB_PERSON_DETECTOR": "RTMLib人物検出器 YOLOX（現在未使用）",
+    "RTMLIB_POSE_MODEL": "RTMPoseモデル",
+    "RTMLIB_POSE_INPUT_SIZE": "RTMPose入力解像度",
     "RTMPOSE_BATCH_SIZE": "RTMPoseバッチサイズ",
     "DEVICE": "実行デバイス（YOLO・姿勢推定）",
 }
 CHOICES = {
     "YOLO_MODEL": ("n", "s", "m", "l", "x"),
-    "MODEL_MODE": ("performance", "balanced", "lightweight"),
-    "RTMLIB_POSE_MODEL": ("mode", "t", "s", "m", "l", "x"),
-    "RTMLIB_POSE_INPUT_SIZE": ("mode", "256x192", "384x288"),
-    "RTMLIB_PERSON_DETECTOR": ("mode", "nano", "tiny", "s", "m", "l", "x"),
+    "RTMLIB_POSE_MODEL": ("t", "s", "m", "l", "x"),
+    "RTMLIB_POSE_INPUT_SIZE": ("256x192", "384x288"),
     "DEVICE": ("auto", "cpu", "cuda"),
 }
 
-RTMLIB_MODE_POSE = {
+_LEGACY_MODE_POSE = {
     "performance": ("x", "384x288"),
     "balanced": ("m", "256x192"),
     "lightweight": ("s", "256x192"),
 }
-RTMLIB_MODE_DETECTOR = {
-    "performance": "x",
-    "balanced": "m",
-    "lightweight": "tiny",
-}
+_REMOVED_RTMLIB_SETTING_KEYS = (
+    "MODEL_MODE",
+    "RTMLIB_PERSON_DETECTOR",
+    "RTMLIB_DETECTOR_SCORE_THRESHOLD",
+    "RTMLIB_DETECTOR_NMS_THRESHOLD",
+)
 RTMLIB_POSE_ASSETS = {
     "t": {
         "256x192": {
@@ -236,77 +230,49 @@ RTMLIB_POSE_ASSETS = {
         },
     },
 }
-RTMLIB_PERSON_DETECTOR_ASSETS = {
-    "nano": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_nano_8xb8-300e_humanart-40f6f0d0.zip",
-        "input_size": (416, 416),
-    },
-    "tiny": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip",
-        "input_size": (416, 416),
-    },
-    "s": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_s_8xb8-300e_humanart-3ef259a7.zip",
-        "input_size": (640, 640),
-    },
-    "m": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_m_8xb8-300e_humanart-c2c7a14a.zip",
-        "input_size": (640, 640),
-    },
-    "l": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_l_8xb8-300e_humanart-ce1d7a62.zip",
-        "input_size": (640, 640),
-    },
-    "x": {
-        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_x_8xb8-300e_humanart-a39d44ed.zip",
-        "input_size": (640, 640),
-    },
-}
-RTMLIB_DETECTOR_SCORE_THRESHOLD = 0.7
-RTMLIB_DETECTOR_NMS_THRESHOLD = 0.45
+def normalize_legacy_rtmlib_settings(settings: dict) -> dict:
+    """Convert legacy MODEL_MODE / 'mode' / unused detector keys into explicit pose settings."""
+    out = dict(settings)
+    legacy_mode = str(out.get("MODEL_MODE") or "performance")
+    mode_pose, mode_resolution = _LEGACY_MODE_POSE.get(legacy_mode, ("x", "384x288"))
+
+    raw_pose = out.get("RTMLIB_POSE_MODEL")
+    if raw_pose == "mode" or ("MODEL_MODE" in out and raw_pose in (None, "")):
+        out["RTMLIB_POSE_MODEL"] = mode_pose
+
+    raw_res = out.get("RTMLIB_POSE_INPUT_SIZE")
+    if raw_res == "mode" or ("MODEL_MODE" in out and raw_res in (None, "")):
+        resolved_pose = str(out.get("RTMLIB_POSE_MODEL") or mode_pose)
+        supported = RTMLIB_POSE_ASSETS.get(resolved_pose)
+        if supported:
+            out["RTMLIB_POSE_INPUT_SIZE"] = (
+                mode_resolution if mode_resolution in supported else next(iter(supported))
+            )
+        else:
+            out["RTMLIB_POSE_INPUT_SIZE"] = mode_resolution
+
+    for legacy_key in _REMOVED_RTMLIB_SETTING_KEYS:
+        out.pop(legacy_key, None)
+    return out
 
 
-def resolve_rtmlib_selection(mode: str, pose_model: str, pose_input_size: str, person_detector: str) -> dict:
-    """Resolve preset/manual RTMLib model choices to downloadable models and input sizes."""
-    if mode not in RTMLIB_MODE_POSE:
-        raise ValueError(f"不明なRTMLib推定モードです: {mode}")
-
-    mode_pose, mode_resolution = RTMLIB_MODE_POSE[mode]
-    selected_pose = mode_pose if pose_model == "mode" else pose_model
-    if selected_pose not in RTMLIB_POSE_ASSETS:
+def resolve_rtmlib_selection(pose_model: str, pose_input_size: str) -> dict:
+    """Resolve RTMLib model choices to downloadable models and input sizes."""
+    if pose_model not in RTMLIB_POSE_ASSETS:
         raise ValueError(f"不明なRTMPoseモデルです: {pose_model}")
 
-    if pose_input_size == "mode":
-        if pose_model == "mode":
-            selected_resolution = mode_resolution
-        elif mode_resolution in RTMLIB_POSE_ASSETS[selected_pose]:
-            selected_resolution = mode_resolution
-        else:
-            selected_resolution = next(iter(RTMLIB_POSE_ASSETS[selected_pose]))
-    else:
-        selected_resolution = pose_input_size
-
-    pose_asset = RTMLIB_POSE_ASSETS[selected_pose].get(selected_resolution)
+    pose_asset = RTMLIB_POSE_ASSETS[pose_model].get(pose_input_size)
     if pose_asset is None:
-        available = " / ".join(RTMLIB_POSE_ASSETS[selected_pose])
+        available = " / ".join(RTMLIB_POSE_ASSETS[pose_model])
         raise ValueError(
-            f"RTMPose-{selected_pose.upper()} は {selected_resolution} に対応していません。"
+            f"RTMPose-{pose_model.upper()} は {pose_input_size} に対応していません。"
             f"使用できる解像度: {available}。"
         )
 
-    selected_detector = (
-        RTMLIB_MODE_DETECTOR[mode] if person_detector == "mode" else person_detector
-    )
-    detector_asset = RTMLIB_PERSON_DETECTOR_ASSETS.get(selected_detector)
-    if detector_asset is None:
-        raise ValueError(f"不明なRTMLib人物検出器です: {person_detector}")
-
     return {
-        "pose_model": selected_pose,
-        "pose_resolution": selected_resolution,
+        "pose_model": pose_model,
+        "pose_resolution": pose_input_size,
         "pose_asset": pose_asset,
-        "person_detector": selected_detector,
-        "detector_asset": detector_asset,
     }
 
 
@@ -1444,10 +1410,8 @@ def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
 
 def create_pose_model(device: str):
     selection = resolve_rtmlib_selection(
-        MODEL_MODE,
         RTMLIB_POSE_MODEL,
         RTMLIB_POSE_INPUT_SIZE,
-        RTMLIB_PERSON_DETECTOR,
     )
     pose_asset = selection["pose_asset"]
     print(
@@ -2109,7 +2073,9 @@ def run_analysis_worker(config_path: Path) -> None:
     globals()["draw_skeleton"] = rtmlib.draw_skeleton
     globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
 
-    settings = json.loads(config_path.read_text(encoding="utf-8"))
+    settings = normalize_legacy_rtmlib_settings(
+        json.loads(config_path.read_text(encoding="utf-8"))
+    )
     unknown = set(settings) - set(ENGINE_DEFAULTS)
     if unknown:
         raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")

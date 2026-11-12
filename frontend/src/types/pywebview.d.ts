@@ -33,10 +33,8 @@ export interface BackendApi {
   get_job_thumbnail(jobId: string): Promise<string>;
   get_preview_frame(videoPathOrJobId: string, frameIdxOrTime?: number): Promise<string>;
   validate_rtmlib_settings(
-    mode: string,
     poseModel: string,
-    inputSize: string,
-    detector: string
+    inputSize: string
   ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }>;
   get_output_preview_names(folderPath: string): Promise<Record<string, string>>;
 }

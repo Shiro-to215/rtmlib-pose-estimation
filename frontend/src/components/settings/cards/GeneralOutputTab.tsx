@@ -16,7 +16,6 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
   errors,
 }) => {
   const deviceOptions = choices.DEVICE || ['auto', 'cpu', 'cuda'];
-  const modelModeOptions = choices.MODEL_MODE || ['performance', 'balanced', 'lightweight'];
   const yoloModelOptions = choices.YOLO_MODEL || ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'];
   const backendOptions = choices.BACKEND || ['onnxruntime', 'opencv'];
 
@@ -30,15 +29,6 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           value={values.DEVICE || 'auto'}
           options={deviceOptions}
           onChange={(v) => setFieldValue('DEVICE', v)}
-        />
-
-        {/* MODEL_MODE */}
-        <DropdownSelect
-          label="姿勢推定プリセット (MODEL_MODE)"
-          description="推論精度と処理速度のバランスプリセット"
-          value={values.MODEL_MODE || 'performance'}
-          options={modelModeOptions}
-          onChange={(v) => setFieldValue('MODEL_MODE', v)}
         />
       </div>
 

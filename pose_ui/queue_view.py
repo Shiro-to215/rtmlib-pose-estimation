@@ -388,9 +388,21 @@ class QueueListView(ctk.CTkFrame):
         card._bg_frames.append(name_lbl)  # type: ignore[attr-defined]
 
         yolo_short = str(job.settings.get("YOLO_MODEL", "")).removeprefix("yolo11").removesuffix(".pt")
-        mode_short = str(job.settings.get("MODEL_MODE", ""))
+        legacy_mode = str(job.settings.get("MODEL_MODE") or "performance")
+        legacy_map = {
+            "performance": ("x", "384x288"),
+            "balanced": ("m", "256x192"),
+            "lightweight": ("s", "256x192"),
+        }
+        mode_pose, mode_res = legacy_map.get(legacy_mode, ("x", "384x288"))
+        pose_model = str(job.settings.get("RTMLIB_POSE_MODEL", "x"))
+        if pose_model == "mode":
+            pose_model = mode_pose
+        pose_size = str(job.settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"))
+        if pose_size == "mode":
+            pose_size = mode_res
         dev_short = str(job.settings.get("DEVICE", "auto"))
-        spec_text = f"{mode_short} / YOLO-{yolo_short} / {dev_short}"
+        spec_text = f"RTMPose-{pose_model} ({pose_size}) / YOLO-{yolo_short} / {dev_short}"
 
         spec_lbl = tk.Label(
             top_line,
