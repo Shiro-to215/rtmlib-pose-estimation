@@ -318,7 +318,7 @@ python -m pip install -r requirements.txt
 | `CROP_PADDING_RATIO` | `0.25` | 対象人物を切り出して RTMLib へ渡す際に上下左右へ追加する余白率（`0.25` = 25%）。 |
 | `YOLO_CLASSES` | `[0]` | 検出対象の COCO クラス ID（`0` = `person`）。カンマ区切りで複数指定できます。 |
 | `YOLO_TRACK_ID` | 空欄 (`None`) | 指定した場合のみ、その YOLO 追跡 ID を対象にします。空欄なら動画全体の移動量から主要人物を自動選択します。 |
-| `YOLO_BATCH_SIZE` | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`64`）。CPU 実行時は `1` に固定され、CUDA メモリ不足（OOM）時は自動で `1` へフォールバックします。 |
+| `YOLO_BATCH_SIZE` | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時は `1` に固定され、CUDA メモリ不足（OOM）時は自動で `1` へフォールバックします。 |
 
 **RTMPose 骨格推定設定**
 
@@ -327,7 +327,7 @@ python -m pip install -r requirements.txt
 | `RTMLIB_POSE_MODEL` | `mode` | `mode`（プリセット連動）または個別指定 `t` / `s` / `m` / `l` / `x`。 |
 | `RTMLIB_POSE_INPUT_SIZE` | `mode` | `mode`（自動）または `256x192` / `384x288`。 |
 | `RTMLIB_PERSON_DETECTOR` | `mode` | 互換維持用の設定項目です（現在は第1段階の YOLO11 枠を直接使用し、第2段階の YOLOX はスキップします）。 |
-| `RTMPOSE_BATCH_SIZE` | `1` | RTMPose で一度に推論するフレーム数（`1`〜`64`）。CPU 実行時・動的バッチ非対応 ONNX モデル・CUDA OOM 時は自動で `1` へフォールバックします。 |
+| `RTMPOSE_BATCH_SIZE` | `1` | RTMPose で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時・動的バッチ非対応 ONNX モデル・CUDA OOM 時は自動で `1` へフォールバックします。 |
 | `KEYPOINT_THRESHOLD` | `0.45` | 関節スコアしきい値。この値未満の関節は骨格描画や幾何計算で低信頼として扱われます。 |
 
 > **RTMLib プリセットおよび解像度互換性の仕様**

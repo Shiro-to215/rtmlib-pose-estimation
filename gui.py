@@ -553,7 +553,7 @@ def pose_match_cost(
     )
 
 
-MAX_BATCH_SIZE = 64
+MAX_BATCH_SIZE = 512
 
 
 def clamp_batch_size(value, minimum: int = 1, maximum: int = MAX_BATCH_SIZE) -> int:
@@ -1765,6 +1765,8 @@ def run_analysis() -> None:
         pose_success_count = 0
         last_progress = 50
         total_pose_frames = len(target_boxes)
+        if total_pose_frames > 0 and effective_rtmpose_batch > total_pose_frames:
+            effective_rtmpose_batch = total_pose_frames
         aborted = False
 
         def _emit_pose_frame(idx, frame, target_box, restored_keypoints, pose_scores) -> None:
@@ -1839,7 +1841,10 @@ def run_analysis() -> None:
             while next_read_idx < total_pose_frames and not eof:
                 buffered = []
                 valid_positions = []
-                max_buffered = max(effective_rtmpose_batch * 2, 16)
+                max_buffered = min(
+                    effective_rtmpose_batch + 64,
+                    max(effective_rtmpose_batch * 2, 16),
+                )
                 while (
                     next_read_idx < total_pose_frames
                     and len(valid_positions) < effective_rtmpose_batch

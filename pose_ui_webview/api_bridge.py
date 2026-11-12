@@ -642,8 +642,8 @@ class BackendApi:
                 except (ValueError, TypeError):
                     pass
 
-        # Clamp batch size settings to 1..64
-        max_batch = int(getattr(gui, "MAX_BATCH_SIZE", 64))
+        # Clamp batch size settings to 1..512
+        max_batch = int(getattr(gui, "MAX_BATCH_SIZE", 512))
         for batch_key in ("YOLO_BATCH_SIZE", "RTMPOSE_BATCH_SIZE"):
             if batch_key in sanitized:
                 try:

@@ -105,10 +105,10 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
         <div className="grid grid-cols-2 gap-4 mt-2">
           <SliderWithInput
             label="YOLO バッチサイズ (YOLO_BATCH_SIZE)"
-            description="一度にGPUへ送るフレーム数（1〜64。CPU時は1固定、VRAM不足時は1へフォールバック）"
+            description="一度にGPUへ送るフレーム数（1〜512。CPU時は1固定、VRAM不足時は1へフォールバック）"
             value={values.YOLO_BATCH_SIZE ?? 1}
             min={1}
-            max={64}
+            max={512}
             step={1}
             unit="枚"
             onChange={(v) => setFieldValue('YOLO_BATCH_SIZE', Math.round(v))}
@@ -150,10 +150,10 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
         <div className="grid grid-cols-2 gap-4 mt-3">
           <SliderWithInput
             label="RTMPose バッチサイズ (RTMPOSE_BATCH_SIZE)"
-            description="一度に姿勢推定するフレーム数（1〜64。非対応ONNX/CPU/VRAM不足時は1へフォールバック）"
+            description="一度に姿勢推定するフレーム数（1〜512。非対応ONNX/CPU/VRAM不足時は1へフォールバック）"
             value={values.RTMPOSE_BATCH_SIZE ?? 1}
             min={1}
-            max={64}
+            max={512}
             step={1}
             unit="枚"
             onChange={(v) => setFieldValue('RTMPOSE_BATCH_SIZE', Math.round(v))}
