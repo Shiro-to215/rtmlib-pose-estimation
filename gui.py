@@ -5,8 +5,10 @@ import csv
 from datetime import datetime
 import json
 import math
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from time import perf_counter
 
@@ -619,6 +621,35 @@ def supports_dynamic_batch(pose_model) -> tuple[bool, object]:
     return True, batch_dim
 
 
+def _ensure_pose_preprocess_ready(pose_model) -> None:
+    """Convert mean/std once so concurrent or repeated preprocess calls avoid re-allocation."""
+    import numpy as np
+
+    if getattr(pose_model, "mean", None) is not None and not isinstance(
+        pose_model.mean, np.ndarray
+    ):
+        pose_model.mean = np.array(pose_model.mean)
+    if getattr(pose_model, "std", None) is not None and not isinstance(
+        pose_model.std, np.ndarray
+    ):
+        pose_model.std = np.array(pose_model.std)
+
+
+def _write_chw_float32_into(preprocessed_img, dest) -> None:
+    """Copy rtmlib RTMPose.preprocess output directly into a pre-allocated (3, H, W) float32 slice."""
+    import numpy as np
+
+    arr = np.asarray(preprocessed_img)
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        np.copyto(dest, np.transpose(arr, (2, 0, 1)), casting="unsafe")
+    elif arr.ndim == 3 and arr.shape[0] == 3:
+        np.copyto(dest, arr, casting="unsafe")
+    else:
+        raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
+
+
 def _to_chw_float32(preprocessed_img):
     """Normalize rtmlib RTMPose.preprocess image output to contiguous (3, H, W) float32."""
     import numpy as np
@@ -669,18 +700,44 @@ def infer_pose_single(pose_model, frame, target_box):
     return _extract_single_pose(keypoints, scores)
 
 
-def infer_pose_batch(pose_model, batch_items):
-    """Run batched RTMPose inference via ONNX Runtime for [(frame, target_box), ...]."""
+def infer_pose_batch(
+    pose_model,
+    batch_items,
+    fixed_batch_size: int | None = None,
+    batch_buffer: dict | None = None,
+):
+    """Run batched RTMPose inference via ONNX Runtime for [(frame, target_box), ...].
+
+    When ``fixed_batch_size`` is set above ``len(valid)``, the tensor is padded to
+    ``fixed_batch_size`` so ONNX Runtime always sees a constant input shape.
+    """
     import numpy as np
 
     if not batch_items:
         return []
-    if len(batch_items) == 1:
+    if len(batch_items) == 1 and (fixed_batch_size is None or fixed_batch_size <= 1):
         frame, target_box = batch_items[0]
         return [infer_pose_single(pose_model, frame, target_box)]
 
+    _ensure_pose_preprocess_ready(pose_model)
+
     prepared = []
-    chw_tensors = []
+    valid_metas = []
+    batch_tensor = None
+    tensor_idx = 0
+    target_cap = max(len(batch_items), fixed_batch_size or 0)
+
+    def _ensure_buffer(sample_h: int, sample_w: int):
+        nonlocal batch_tensor
+        if batch_buffer is not None:
+            buf = batch_buffer.get("tensor")
+            if buf is None or buf.shape != (target_cap, 3, sample_h, sample_w):
+                buf = np.empty((target_cap, 3, sample_h, sample_w), dtype=np.float32)
+                batch_buffer["tensor"] = buf
+            batch_tensor = buf
+        else:
+            batch_tensor = np.empty((target_cap, 3, sample_h, sample_w), dtype=np.float32)
+
     for frame, target_box in batch_items:
         height, width = frame.shape[:2]
         clamped = _clamped_target_box(target_box, width, height)
@@ -688,29 +745,71 @@ def infer_pose_batch(pose_model, batch_items):
             prepared.append(None)
             continue
         preprocessed, center, scale = pose_model.preprocess(frame, clamped)
-        chw_tensors.append(_to_chw_float32(preprocessed))
-        prepared.append((center, scale))
+        arr = np.asarray(preprocessed)
+        if arr.ndim == 4 and arr.shape[0] == 1:
+            arr = arr[0]
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            sample_h, sample_w = arr.shape[0], arr.shape[1]
+        elif arr.ndim == 3 and arr.shape[0] == 3:
+            sample_h, sample_w = arr.shape[1], arr.shape[2]
+        else:
+            raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
 
-    if not chw_tensors:
+        if batch_tensor is None:
+            _ensure_buffer(sample_h, sample_w)
+        _write_chw_float32_into(arr, batch_tensor[tensor_idx])
+        tensor_idx += 1
+        meta = (center, scale)
+        valid_metas.append(meta)
+        prepared.append(meta)
+
+    valid_count = len(valid_metas)
+    if valid_count == 0 or batch_tensor is None:
         return [(None, None) for _ in batch_items]
 
-    batch_tensor = np.stack(chw_tensors, axis=0)
+    run_count = fixed_batch_size if (fixed_batch_size and fixed_batch_size >= valid_count) else valid_count
+    if run_count > valid_count:
+        batch_tensor[valid_count:run_count] = batch_tensor[0]
+    feed_tensor = batch_tensor if run_count == batch_tensor.shape[0] else batch_tensor[:run_count]
+
     session = pose_model.session
     input_name = session.get_inputs()[0].name
     output_names = [out.name for out in session.get_outputs()]
-    raw_outputs = session.run(output_names, {input_name: batch_tensor})
+    raw_outputs = session.run(output_names, {input_name: feed_tensor})
+    if run_count > valid_count:
+        raw_outputs = [out[:valid_count] for out in raw_outputs]
+
+    # Try vectorized batch postprocessing across all valid items at once.
+    valid_results = None
+    if len(raw_outputs) == 2 and valid_count > 1:
+        try:
+            centers = np.asarray([m[0] for m in valid_metas])[:, None, :]
+            scales = np.asarray([m[1] for m in valid_metas])[:, None, :]
+            kpts_batch, scores_batch = pose_model.postprocess(raw_outputs, centers, scales)
+            kpts_arr = np.asarray(kpts_batch, dtype=np.float32)
+            scores_arr = np.asarray(scores_batch, dtype=np.float32)
+            if kpts_arr.ndim == 3 and kpts_arr.shape[0] == valid_count:
+                valid_results = [
+                    ([(float(pt[0]), float(pt[1])) for pt in kpts_arr[i]], scores_arr[i])
+                    for i in range(valid_count)
+                ]
+        except Exception:
+            valid_results = None
+
+    if valid_results is None:
+        valid_results = []
+        for idx, (center, scale) in enumerate(valid_metas):
+            item_outputs = [out[idx : idx + 1] for out in raw_outputs]
+            kpts, scs = pose_model.postprocess(item_outputs, center, scale)
+            valid_results.append(_extract_single_pose(kpts, scs))
 
     results = []
-    tensor_idx = 0
+    valid_iter = iter(valid_results)
     for meta in prepared:
         if meta is None:
             results.append((None, None))
-            continue
-        center, scale = meta
-        item_outputs = [out[tensor_idx : tensor_idx + 1] for out in raw_outputs]
-        tensor_idx += 1
-        kpts, scs = pose_model.postprocess(item_outputs, center, scale)
-        results.append(_extract_single_pose(kpts, scs))
+        else:
+            results.append(next(valid_iter))
     return results
 
 
@@ -1094,8 +1193,8 @@ def stabilize_yolo_ids(
     ], next_id
 
 
-def draw_stable_yolo_tracks(frame, detections):
-    annotated = frame.copy()
+def draw_stable_yolo_tracks(frame, detections, copy: bool = True):
+    annotated = frame.copy() if copy else frame
     for detection in detections:
         left, top, right, bottom = map(int, detection["bbox"])
         stable_id = detection["stable_id"]
@@ -1293,6 +1392,163 @@ def sanitize_mp4v_fps(fps: float) -> float:
     return float(round(fps))
 
 
+class AsyncFrameReader:
+    """Bounded background thread that prefetches decoded frames from VideoCapture."""
+
+    _SENTINEL = object()
+
+    def __init__(
+        self,
+        capture,
+        max_queue_size: int = 16,
+        max_frames: int | None = None,
+    ) -> None:
+        self._capture = capture
+        self._max_frames = max_frames
+        self._queue: queue.Queue = queue.Queue(maxsize=max(2, max_queue_size))
+        self._stop_event = threading.Event()
+        self._error: BaseException | None = None
+        self._eof = False
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="AsyncFrameReader",
+        )
+        self._thread.start()
+
+    def _put_with_stop(self, item) -> bool:
+        while not self._stop_event.is_set():
+            try:
+                self._queue.put(item, timeout=0.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _run(self) -> None:
+        read_count = 0
+        try:
+            while not self._stop_event.is_set():
+                if self._max_frames is not None and read_count >= self._max_frames:
+                    break
+                success, frame = self._capture.read()
+                if not success:
+                    break
+                read_count += 1
+                if not self._put_with_stop(frame):
+                    break
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            while True:
+                try:
+                    self._queue.put(self._SENTINEL, timeout=0.05)
+                    break
+                except queue.Full:
+                    if self._stop_event.is_set():
+                        try:
+                            self._queue.get_nowait()
+                        except queue.Empty:
+                            pass
+
+    def read_frame(self):
+        if self._eof:
+            return None
+        item = self._queue.get()
+        if item is self._SENTINEL:
+            self._eof = True
+            if self._error is not None:
+                raise self._error
+            return None
+        return item
+
+    def read_batch(self, count: int) -> list:
+        frames = []
+        for _ in range(max(1, count)):
+            frame = self.read_frame()
+            if frame is None:
+                break
+            frames.append(frame)
+        return frames
+
+    def close(self) -> None:
+        self._stop_event.set()
+        while self._thread.is_alive():
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._thread.join(timeout=0.05)
+
+
+class AsyncVideoWriter:
+    """Bounded background thread that encodes and writes frames to VideoWriter."""
+
+    _SENTINEL = object()
+
+    def __init__(self, writer, max_queue_size: int = 16) -> None:
+        self._writer = writer
+        self._queue: queue.Queue = queue.Queue(maxsize=max(2, max_queue_size))
+        self._stop_event = threading.Event()
+        self._error: BaseException | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="AsyncVideoWriter",
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                item = self._queue.get()
+                if item is self._SENTINEL:
+                    break
+                self._writer.write(item)
+        except BaseException as exc:
+            self._error = exc
+            self._stop_event.set()
+
+    def write(self, frame) -> None:
+        if self._error is not None:
+            raise self._error
+        while not self._stop_event.is_set():
+            try:
+                self._queue.put(frame, timeout=0.05)
+                return
+            except queue.Full:
+                continue
+        if self._error is not None:
+            raise self._error
+
+    def close(self, drain: bool = True) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if not drain:
+            self._stop_event.set()
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except queue.Empty:
+                pass
+        while self._thread.is_alive():
+            try:
+                self._queue.put(self._SENTINEL, timeout=0.05)
+                break
+            except queue.Full:
+                if not drain:
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        pass
+        self._thread.join()
+        if drain and self._error is not None:
+            raise self._error
+
+
 def open_mp4v_writer(output_path: Path, fps: float, width: int, height: int):
     writer_fps = sanitize_mp4v_fps(fps)
     writer = cv2.VideoWriter(
@@ -1349,16 +1605,13 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
             verbose=False,
         )
 
+    queue_depth = max(8, min(48, effective_batch + 8))
+    reader = AsyncFrameReader(capture, max_queue_size=queue_depth)
+    writer_worker = AsyncVideoWriter(writer, max_queue_size=max(8, min(32, effective_batch + 8)))
+    aborted = False
     try:
-        eof = False
-        while not eof:
-            batch_frames = []
-            for _ in range(effective_batch):
-                success, frame = capture.read()
-                if not success:
-                    eof = True
-                    break
-                batch_frames.append(frame)
+        while True:
+            batch_frames = reader.read_batch(effective_batch)
             if not batch_frames:
                 break
 
@@ -1388,7 +1641,7 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
                     effective_batch = 1
                     results = [_track_single(f)[0] for f in batch_frames]
             else:
-                results = [_track_single(batch_frames[0])[0]]
+                results = [_track_single(f)[0] for f in batch_frames]
 
             for frame, result in zip(batch_frames, results):
                 detections, next_id = stabilize_yolo_ids(
@@ -1397,16 +1650,25 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
                     next_id,
                 )
                 frame_detections.append(detections)
-                writer.write(draw_stable_yolo_tracks(frame, detections))
+                writer_worker.write(draw_stable_yolo_tracks(frame, detections, copy=False))
                 processed_frames += 1
                 if total_frames > 0:
                     progress = min(49, int(processed_frames * 50 / total_frames))
                     if progress > last_progress:
                         print(f"PROGRESS:{progress}:YOLO", flush=True)
                         last_progress = progress
+    except BaseException:
+        aborted = True
+        raise
     finally:
-        capture.release()
-        writer.release()
+        try:
+            reader.close()
+        finally:
+            try:
+                writer_worker.close(drain=not aborted)
+            finally:
+                capture.release()
+                writer.release()
     print(f"YOLO処理フレーム数: {processed_frames}（動画情報の値: {total_frames}）", flush=True)
     print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
@@ -1487,38 +1749,138 @@ def run_analysis() -> None:
         csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
         csv_writer.writeheader()
 
-        try:
-            frame_count = 0
-            target_box_count = 0
-            pose_call_count = 0
-            pose_success_count = 0
-            last_progress = 50
-            total_pose_frames = len(target_boxes)
-            print("PROGRESS:50:RTMLIB", flush=True)
-            while frame_count < len(target_boxes):
-                buffered = []
-                read_limit = min(effective_rtmpose_batch, len(target_boxes) - frame_count)
-                for offset in range(read_limit):
-                    success, frame = capture.read()
-                    if not success:
-                        break
-                    idx = frame_count + offset
-                    buffered.append((idx, frame, target_boxes[idx]))
-                if not buffered:
-                    break
+        reader = AsyncFrameReader(
+            capture,
+            max_queue_size=max(8, min(48, effective_rtmpose_batch + 8)),
+            max_frames=len(target_boxes),
+        )
+        writer_worker = AsyncVideoWriter(
+            writer,
+            max_queue_size=max(8, min(32, effective_rtmpose_batch + 8)),
+        )
+        batch_buffer: dict = {}
+        frame_count = 0
+        target_box_count = 0
+        pose_call_count = 0
+        pose_success_count = 0
+        last_progress = 50
+        total_pose_frames = len(target_boxes)
+        aborted = False
 
-                valid_positions = [
-                    pos
-                    for pos, (_, frm, box) in enumerate(buffered)
-                    if _clamped_target_box(box, frm.shape[1], frm.shape[0]) is not None
-                ]
+        def _emit_pose_frame(idx, frame, target_box, restored_keypoints, pose_scores) -> None:
+            nonlocal frame_count, target_box_count, pose_success_count, last_progress
+            if target_box is not None:
+                target_box_count += 1
+            if restored_keypoints is not None:
+                pose_success_count += 1
+                annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
+
+            frame_data = {
+                "frame": idx,
+                "time_seconds": idx / fps,
+                "persons": [],
+            }
+            if restored_keypoints is not None:
+                person = {
+                    "person_id": target_stable_id,
+                    "yolo_track_id": target_stable_id,
+                }
+                for kp_index, name in enumerate(COCO_KEYPOINTS):
+                    x, y = restored_keypoints[kp_index]
+                    person[name] = {
+                        "x": x,
+                        "y": y,
+                        "score": float(pose_scores[kp_index]),
+                    }
+                frame_data["persons"].append(person)
+
+            csv_writer.writerow(make_csv_row(frame_data))
+
+            if restored_keypoints is not None and target_box is not None:
+                label_x, label_y = map(int, target_box[:2])
+                cv2.putText(
+                    frame,
+                    f"YOLO stable_id: {target_stable_id}",
+                    (label_x, max(25, label_y - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            cv2.putText(
+                frame,
+                f"Frame: {idx + 1}",
+                (40, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            writer_worker.write(frame)
+            frame_count += 1
+
+            if total_pose_frames > 0:
+                progress = 50 + int(frame_count * 50 / total_pose_frames)
+                if progress > last_progress:
+                    print(f"PROGRESS:{progress}:RTMLIB", flush=True)
+                    last_progress = progress
+
+            if frame_count % 30 == 0:
+                print(f"Processed {frame_count} frames", flush=True)
+
+        try:
+            print("PROGRESS:50:RTMLIB", flush=True)
+            next_read_idx = 0
+            eof = False
+            while next_read_idx < total_pose_frames and not eof:
+                buffered = []
+                valid_positions = []
+                max_buffered = max(effective_rtmpose_batch * 2, 16)
+                while (
+                    next_read_idx < total_pose_frames
+                    and len(valid_positions) < effective_rtmpose_batch
+                    and len(buffered) < max_buffered
+                ):
+                    frame = reader.read_frame()
+                    if frame is None:
+                        eof = True
+                        break
+                    idx = next_read_idx
+                    next_read_idx += 1
+                    target_box = target_boxes[idx]
+                    is_valid = (
+                        _clamped_target_box(target_box, frame.shape[1], frame.shape[0])
+                        is not None
+                    )
+                    if not buffered and not is_valid:
+                        _emit_pose_frame(idx, frame, target_box, None, None)
+                        continue
+                    pos = len(buffered)
+                    buffered.append((idx, frame, target_box))
+                    if is_valid:
+                        valid_positions.append(pos)
+
+                if not buffered:
+                    continue
+
                 pose_results = [(None, None) for _ in buffered]
                 if valid_positions:
                     pose_call_count += len(valid_positions)
-                    batch_items = [(buffered[pos][1], buffered[pos][2]) for pos in valid_positions]
-                    if effective_rtmpose_batch > 1 and len(batch_items) > 1:
+                    batch_items = [
+                        (buffered[pos][1], buffered[pos][2]) for pos in valid_positions
+                    ]
+                    if effective_rtmpose_batch > 1:
                         try:
-                            inferred = infer_pose_batch(pose_model, batch_items)
+                            inferred = infer_pose_batch(
+                                pose_model,
+                                batch_items,
+                                fixed_batch_size=effective_rtmpose_batch,
+                                batch_buffer=batch_buffer,
+                            )
                         except Exception as exc:
                             if not is_cuda_oom_error(exc):
                                 raise
@@ -1526,6 +1888,7 @@ def run_analysis() -> None:
                                 "RTMPose: CUDAメモリ不足（OOM）が発生したため、バッチサイズを 1 にフォールバックして続行します。",
                                 flush=True,
                             )
+                            batch_buffer.clear()
                             _clear_cuda_cache()
                             effective_rtmpose_batch = 1
                             inferred = [
@@ -1543,71 +1906,21 @@ def run_analysis() -> None:
                 for (idx, frame, target_box), (restored_keypoints, pose_scores) in zip(
                     buffered, pose_results
                 ):
-                    if target_box is not None:
-                        target_box_count += 1
-                    if restored_keypoints is not None:
-                        pose_success_count += 1
-                        annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
-
-                    frame_data = {
-                        "frame": idx,
-                        "time_seconds": idx / fps,
-                        "persons": [],
-                    }
-                    if restored_keypoints is not None:
-                        person = {
-                            "person_id": target_stable_id,
-                            "yolo_track_id": target_stable_id,
-                        }
-                        for kp_index, name in enumerate(COCO_KEYPOINTS):
-                            x, y = restored_keypoints[kp_index]
-                            person[name] = {
-                                "x": x,
-                                "y": y,
-                                "score": float(pose_scores[kp_index]),
-                            }
-                        frame_data["persons"].append(person)
-
-                    csv_writer.writerow(make_csv_row(frame_data))
-
-                    if restored_keypoints is not None and target_box is not None:
-                        label_x, label_y = map(int, target_box[:2])
-                        cv2.putText(
-                            frame,
-                            f"YOLO stable_id: {target_stable_id}",
-                            (label_x, max(25, label_y - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            (0, 255, 255),
-                            2,
-                            cv2.LINE_AA,
-                        )
-
-                    cv2.putText(
-                        frame,
-                        f"Frame: {idx + 1}",
-                        (40, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.0,
-                        (0, 0, 255),
-                        2,
-                        cv2.LINE_AA,
+                    _emit_pose_frame(
+                        idx, frame, target_box, restored_keypoints, pose_scores
                     )
-
-                    writer.write(frame)
-                    frame_count += 1
-
-                    if total_pose_frames > 0:
-                        progress = 50 + int(frame_count * 50 / total_pose_frames)
-                        if progress > last_progress:
-                            print(f"PROGRESS:{progress}:RTMLIB", flush=True)
-                            last_progress = progress
-
-                    if frame_count % 30 == 0:
-                        print(f"Processed {frame_count} frames", flush=True)
+        except BaseException:
+            aborted = True
+            raise
         finally:
-            capture.release()
-            writer.release()
+            try:
+                reader.close()
+            finally:
+                try:
+                    writer_worker.close(drain=not aborted)
+                finally:
+                    capture.release()
+                    writer.release()
 
     rtmlib_elapsed_seconds = rtmlib_initialization_seconds + perf_counter() - rtmlib_started_at
     print("PROGRESS:100:RTMLIB", flush=True)
