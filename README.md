@@ -60,7 +60,7 @@
 | **Git**（`git clone` を使う場合） | [Git 公式ダウンロード](https://git-scm.com/downloads) | ZIP ダウンロードで済ませる場合は不要です（macOS は後述の Command Line Tools に含まれます）。 |
 
 > **初回解析時の自動ダウンロード（インターネット接続）**
-> YOLO11 の重みファイル（`yolo11*.pt`）および RTMLib のモデル（YOLOX・RTMPose の ONNX zip）は Git には含まれていません。**初回の解析実行時に自動的にダウンロード**されるため、初回実行時はインターネットに接続した状態で行ってください。
+> YOLO11 の重みファイル（`yolo11*.pt`）および RTMPose のモデル（ONNX zip）は Git には含まれていません。**初回の解析実行時に自動的にダウンロード**されるため、初回実行時はインターネットに接続した状態で行ってください。
 
 ### 2.2 OS・実行環境別の追加ソフトウェア
 
@@ -247,7 +247,7 @@ python -m pip install -r requirements.txt
 3. **右ペイン（ワークスペース）** — 以下の3画面を切り替えて操作します。
    - **`予約リスト`**: 登録済みの動画カード一覧、`削除`・`上へ`・`下へ`・`基本設定` ツールバー、点線枠 `＋ 予約を追加`
    - **`予約を追加`**: 動画選択・出力先指定・サムネイル指定
-   - **`基本設定` / 個別 `設定`**: 検索バー＋4つの設定タブ
+   - **`基本設定` / 個別 `設定`**: 検索バー＋3つの設定タブ
 
 ### 4.2 基本の流れ（予約〜連続解析）
 
@@ -283,7 +283,7 @@ python -m pip install -r requirements.txt
   - `auto`（初期値）: PyTorch CUDA と ONNX Runtime CUDA が両方使える場合に GPU を選択します。GPU環境が不足している場合は、理由をログに表示して自動的に CPU を選択します。
   - `cuda`: 両方の推論（YOLO + RTMLib）を GPU で実行します。GPU環境が不足している場合はエラーで停止します。CUDA DLL の読み込みや RTMLib の初期化に失敗した場合も、長い YOLO 処理を始める前に停止します。
   - `cpu`: 両方の推論を CPU で実行します。
-  - 実行ログには、使用デバイス名・GPU名・RTMLib の検出器（`det_model`）と姿勢推定器（`pose_model`）の実行プロバイダー（GPU実行時は `CUDAExecutionProvider`）を表示します。なお動画のデコード・エンコードや追跡処理などは引き続き CPU も使用します。
+  - 実行ログには、使用デバイス名・GPU名・RTMLib の姿勢推定器（`pose_model`）の実行プロバイダー（GPU実行時は `CUDAExecutionProvider`）を表示します。なお動画のデコード・エンコードや追跡処理などは引き続き CPU も使用します。
 - **進捗バー**:
   - `0〜50%`: YOLO 処理（動画情報の総フレーム数を使った概算です。動画ヘッダ情報と実際に読み込めるフレーム数が異なる場合、完了時に 50% へ飛ぶことがあります）。
   - `50〜100%`: RTMLib 処理（YOLO終了時にログへ表示する「実処理フレーム数」を基準に計算します）。
@@ -294,55 +294,45 @@ python -m pip install -r requirements.txt
 
 ## 5. 設定項目の説明
 
-設定画面（`基本設定`／個別 `設定`）には上部キーワード検索と4つのタブがあります。
+設定画面（`基本設定`／個別 `設定`）には上部キーワード検索と3つのタブがあります。
 
 ### タブ1：基本・出力設定
 
 | 設定キー | UI表示名 | 初期値 | 説明 |
 | --- | --- | --- | --- |
 | `DEVICE` | 推論実行デバイス | `auto` | `auto`（自動判定）/ `cpu` / `cuda` から選択します。 |
-| `MODEL_MODE` | 姿勢推定プリセット | `performance` | `performance` / `balanced` / `lightweight` から選びます（下のモデル対応表を参照）。 |
-| `YOLO_MODEL` | YOLOモデル | `yolo11m.pt` | `n`（最速）〜 `x`（最高精度）を選択します。初回実行時に自動ダウンロードされます。 |
 | `BACKEND` | 推論バックエンド | `onnxruntime` | RTMLib の実行バックエンド（`onnxruntime` 推奨）。 |
 | `CSV_MAX_PERSONS` | CSV出力の最大人数列数 | `3` | CSV に用意する人物列の最大数（1〜20）です。必要な人数に合わせて変更してください。 |
 
-### タブ2：検出・信頼度設定
-
 **YOLO 検出・しきい値設定**
 
-| 設定キー | 初期値 | 説明 |
-| --- | --- | --- |
-| `YOLO_IMAGE_SIZE` | `1280` | YOLO の入力解像度（px）。大きいほど小さい人物・遠景を検出しやすくなりますが処理時間が増えます。 |
-| `YOLO_CONFIDENCE` | `0.20` | YOLO の人物検出信頼度しきい値（`0.01`〜`1.0`）。 |
-| `YOLO_IOU` | `0.50` | YOLO の NMS IoU しきい値。重複ボックスの除外基準です。 |
-| `CROP_PADDING_RATIO` | `0.25` | 対象人物を切り出して RTMLib へ渡す際に上下左右へ追加する余白率（`0.25` = 25%）。 |
-| `YOLO_CLASSES` | `[0]` | 検出対象の COCO クラス ID（`0` = `person`）。カンマ区切りで複数指定できます。 |
-| `YOLO_TRACK_ID` | 空欄 (`None`) | 指定した場合のみ、その YOLO 追跡 ID を対象にします。空欄なら動画全体の移動量から主要人物を自動選択します。 |
-| `YOLO_BATCH_SIZE` | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時は `1` に固定され、CUDA メモリ不足（OOM）時は自動で `1` へフォールバックします。 |
+| 設定キー | UI表示名 | 初期値 | 説明 |
+| --- | --- | --- | --- |
+| `YOLO_MODEL` | YOLOモデル | `yolo11m.pt` | `n`（最速）〜 `x`（最高精度）を選択します。初回実行時に自動ダウンロードされます。 |
+| `YOLO_BATCH_SIZE` | YOLO バッチサイズ | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時は `1` に固定され、CUDA メモリ不足（OOM）時は自動で `1` へフォールバックします。 |
+| `YOLO_IMAGE_SIZE` | YOLO 入力解像度 | `1280` | YOLO の入力解像度（px）。大きいほど小さい人物・遠景を検出しやすくなりますが処理時間が増えます。 |
+| `YOLO_CONFIDENCE` | YOLO 検出信頼度 | `0.20` | YOLO の人物検出信頼度しきい値（`0.01`〜`1.0`）。 |
+| `YOLO_IOU` | YOLO NMS IoU しきい値 | `0.50` | YOLO の NMS IoU しきい値。重複ボックスの除外基準です。 |
+| `CROP_PADDING_RATIO` | 人物クロップ余白率 | `0.25` | 対象人物を切り出して RTMLib へ渡す際に上下左右へ追加する余白率（`0.25` = 25%）。 |
+| `YOLO_CLASSES` | 検出対象クラスID | `[0]` | 検出対象の COCO クラス ID（`0` = `person`）。カンマ区切りで複数指定できます。 |
+| `YOLO_TRACK_ID` | 固定追跡ID | 空欄 (`None`) | 指定した場合のみ、その YOLO 追跡 ID を対象にします。空欄なら動画全体の移動量から主要人物を自動選択します。 |
 
 **RTMPose 骨格推定設定**
 
-| 設定キー | 初期値 | 説明 |
-| --- | --- | --- |
-| `RTMLIB_POSE_MODEL` | `mode` | `mode`（プリセット連動）または個別指定 `t` / `s` / `m` / `l` / `x`。 |
-| `RTMLIB_POSE_INPUT_SIZE` | `mode` | `mode`（自動）または `256x192` / `384x288`。 |
-| `RTMLIB_PERSON_DETECTOR` | `mode` | 互換維持用の設定項目です（現在は第1段階の YOLO11 枠を直接使用し、第2段階の YOLOX はスキップします）。 |
-| `RTMPOSE_BATCH_SIZE` | `1` | RTMPose で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時・動的バッチ非対応 ONNX モデル・CUDA OOM 時は自動で `1` へフォールバックします。 |
-| `KEYPOINT_THRESHOLD` | `0.45` | 関節スコアしきい値。この値未満の関節は骨格描画や幾何計算で低信頼として扱われます。 |
+| 設定キー | UI表示名 | 初期値 | 説明 |
+| --- | --- | --- | --- |
+| `RTMLIB_POSE_MODEL` | RTMPose モデル | `x` | `t` / `s` / `m` / `l` / `x` から選択します。 |
+| `RTMLIB_POSE_INPUT_SIZE` | 入力解像度 | `384x288` | `256x192` または `384x288` から選択します。 |
+| `RTMPOSE_BATCH_SIZE` | RTMPose バッチサイズ | `1` | RTMPose で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時・動的バッチ非対応 ONNX モデル・CUDA OOM 時は自動で `1` へフォールバックします。 |
+| `KEYPOINT_THRESHOLD` | 関節スコアしきい値 | `0.45` | この値未満の関節は骨格描画や幾何計算で低信頼として扱われます。 |
 
-> **RTMLib プリセットおよび解像度互換性の仕様**
-> - **プリセット（`MODEL_MODE`）の標準構成**:
->   - `performance`: RTMPose-X (`384x288`) + YOLOX-X (`640x640`)
->   - `balanced`: RTMPose-M (`256x192`) + YOLOX-M (`640x640`)
->   - `lightweight`: RTMPose-S (`256x192`) + YOLOX-tiny (`416x416`)
-> - **RTMPose の対応解像度**:
->   - `t` / `s` / `m`: `256x192` のみ
->   - `l`: `256x192` または `384x288`
->   - `x`: `384x288` のみ
->   - 非対応の組み合わせを指定した場合、設定画面に警告が出るとともに、解析開始前・保存前チェックでエラーになります。
-> - **RTMLib 人物検出器（YOLOX）**: [RTMLib Model Zoo](https://github.com/Tau-J/rtmlib#model-zoo) のモデルを使用します。`nano` / `tiny` は `416x416`、`s` / `m` / `l` / `x` は `640x640` 入力です。なお現在のエンジン（`gui.py`）では検出器の信頼度しきい値 `0.70`・NMS IoU `0.45` を全モード共通で自動適用します。
+> **RTMPose の解像度互換性仕様**
+> - `t` / `s` / `m`: `256x192` のみ対応
+> - `l`: `256x192` または `384x288` に対応
+> - `x`: `384x288` のみ対応
+> - 非対応の組み合わせを指定した場合、設定画面に警告が出るとともに、解析開始前・保存前チェックでエラーになります。
 
-### タブ3：トラッキング・重み設定
+### タブ2：トラッキング・重み設定
 
 | グループ | 主な設定キー | 説明 |
 | --- | --- | --- |
@@ -350,9 +340,9 @@ python -m pip install -r requirements.txt
 | 再捕捉・距離しきい値 | `TARGET_REACQUIRE_MAX_DISTANCE` (`300.0`), `TARGET_REACQUIRE_MIN_IOU` (`0.05`), `TARGET_TRACK_MATCH_THRESHOLD` (`0.75`), `TARGET_TRACK_MIN_IOU` (`0.15`), `TRACK_MAX_DISTANCE` (`250.0`), `TRACK_MAX_MISSED_FRAMES` (`8`), `TRACK_MATCH_THRESHOLD` (`2.0`) | 見失った後の再捕捉許容範囲とトラック維持のしきい値です。 |
 | マッチング・予測重み | `TRACK_CENTER_WEIGHT`, `TRACK_KEYPOINT_WEIGHT`, `TRACK_POSE_WEIGHT`, `TRACK_BBOX_WEIGHT`, `TRACK_VELOCITY_SMOOTHING`, `TRACK_RAW_ID_BONUS`, `TRACK_PREDICTED_BOX_WEIGHT`, `TRACK_PREDICTION_MAX_FRAMES`, `POSE_TRACK_*`, `POSE_BOX_*`, `POSE_TEMPORAL_WEIGHT` | トラックID安定化およびクロップ内での最適人物選択に使う各コスト重みです。 |
 
-### タブ4：可視化・オーバーレイ設定（補足）
+### タブ3：可視化・オーバーレイ設定（補足）
 
-- UI上には `可視化・オーバーレイ設定` タブ（`DRAW_SKELETON`, `DRAW_BBOX`, `SKELETON_LINE_WIDTH`, `KEYPOINT_RADIUS`, `LABEL_FONT_SCALE`）および `RTMLIB_DETECTOR_SCORE_THRESHOLD` / `RTMLIB_DETECTOR_NMS_THRESHOLD` が用意されていますが、現在の解析ワーカー（`gui.py`）では描画設定・内部検出器しきい値は固定値で動作し、これらUI項目は設定保存用（将来拡張用）となっています。
+- UI上には `可視化・オーバーレイ設定` タブ（`DRAW_SKELETON`, `DRAW_BBOX`, `SKELETON_LINE_WIDTH`, `KEYPOINT_RADIUS`, `LABEL_FONT_SCALE`）が用意されていますが、現在の解析ワーカー（`gui.py`）では描画設定は固定値で動作し、これらUI項目は設定保存用（将来拡張用）となっています。
 
 ---
 

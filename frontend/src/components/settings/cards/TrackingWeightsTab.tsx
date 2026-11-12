@@ -24,7 +24,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-2 gap-4">
           <DropdownSelect
-            label="トラッカー設定 (YOLO_TRACKER)"
+            label="トラッカー設定"
             description="トラッキングアルゴリズム定義ファイル"
             value={values.YOLO_TRACKER || 'bytetrack.yaml'}
             options={trackerChoices}
@@ -32,7 +32,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="補間上限フレーム (TARGET_BOX_FILL_MAX_FRAMES)"
+            label="補間上限フレーム"
             description="対象消失時の線形補間を行う上限フレーム数"
             value={values.TARGET_BOX_FILL_MAX_FRAMES ?? 60}
             min={0}
@@ -45,14 +45,14 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-2 gap-4 mt-2">
           <ToggleSwitch
-            label="生IDの優先維持 (TARGET_LOCK_RAW_ID)"
+            label="生IDの優先維持"
             description="YOLOが割り当てた元の追跡IDを優先的に固定します"
             checked={Boolean(values.TARGET_LOCK_RAW_ID)}
             onChange={(v) => setFieldValue('TARGET_LOCK_RAW_ID', v)}
           />
 
           <ToggleSwitch
-            label="消失時の同ID必須 (TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING)"
+            label="消失時の同ID必須"
             description="対象が一度消失した際、同じ生IDが検出されるまで再捕捉を保留"
             checked={Boolean(values.TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING)}
             onChange={(v) => setFieldValue('TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING', v)}
@@ -61,7 +61,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-2 gap-4 mt-2">
           <SliderWithInput
-            label="自動選択最低フレーム (TARGET_SELECTION_MIN_FRAMES)"
+            label="自動選択最低フレーム"
             description="主要被写体として自動候補に挙がる最低検出フレーム数"
             value={values.TARGET_SELECTION_MIN_FRAMES ?? 15}
             min={1}
@@ -72,7 +72,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="自動選択出現率重み (TARGET_SELECTION_COVERAGE_WEIGHT)"
+            label="自動選択出現率重み"
             description="自動選択における全フレームに対する出現割合の考慮度"
             value={values.TARGET_SELECTION_COVERAGE_WEIGHT ?? 0.5}
             min={0.0}
@@ -88,7 +88,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">再捕捉・距離しきい値</h4>
         <div className="grid grid-cols-2 gap-4">
           <SliderWithInput
-            label="対象再捕捉最大距離 (TARGET_REACQUIRE_MAX_DISTANCE)"
+            label="対象再捕捉最大距離"
             description="対象被写体の再捕捉を許容する最大移動距離"
             value={values.TARGET_REACQUIRE_MAX_DISTANCE ?? 300.0}
             min={10.0}
@@ -99,7 +99,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="対象再捕捉最小IoU (TARGET_REACQUIRE_MIN_IOU)"
+            label="対象再捕捉最小IoU"
             description="対象再捕捉時の最低要求IoU"
             value={values.TARGET_REACQUIRE_MIN_IOU ?? 0.05}
             min={0.0}
@@ -111,7 +111,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-3 gap-3 mt-2">
           <SliderWithInput
-            label="対象マッチングしきい値 (TARGET_TRACK_MATCH_THRESHOLD)"
+            label="対象マッチングしきい値"
             value={values.TARGET_TRACK_MATCH_THRESHOLD ?? 0.75}
             min={0.05}
             max={5.0}
@@ -120,7 +120,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="対象追跡最小IoU (TARGET_TRACK_MIN_IOU)"
+            label="対象追跡最小IoU"
             value={values.TARGET_TRACK_MIN_IOU ?? 0.15}
             min={0.0}
             max={1.0}
@@ -129,7 +129,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="トラック最大マッチ距離 (TRACK_MAX_DISTANCE)"
+            label="トラック最大マッチ距離"
             value={values.TRACK_MAX_DISTANCE ?? 250.0}
             min={10.0}
             max={1000.0}
@@ -141,7 +141,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-2 gap-4 mt-2">
           <SliderWithInput
-            label="トラック消失許容フレーム (TRACK_MAX_MISSED_FRAMES)"
+            label="トラック消失許容フレーム"
             description="検出が途絶えてからトラックを終了するまでのフレーム数"
             value={values.TRACK_MAX_MISSED_FRAMES ?? 8}
             min={1}
@@ -152,7 +152,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
           />
 
           <SliderWithInput
-            label="全般マッチコストしきい値 (TRACK_MATCH_THRESHOLD)"
+            label="全般マッチコストしきい値"
             description="トラック関連付け時の最大許容コスト"
             value={values.TRACK_MATCH_THRESHOLD ?? 2.0}
             min={0.1}
@@ -168,7 +168,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">トラックマッチング コスト重み</h4>
         <div className="grid grid-cols-4 gap-3">
           <SliderWithInput
-            label="中心距離 (TRACK_CENTER_WEIGHT)"
+            label="中心距離"
             value={values.TRACK_CENTER_WEIGHT ?? 0.35}
             min={0.0}
             max={1.0}
@@ -176,7 +176,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_CENTER_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="関節点距離 (TRACK_KEYPOINT_WEIGHT)"
+            label="関節点距離"
             value={values.TRACK_KEYPOINT_WEIGHT ?? 0.35}
             min={0.0}
             max={1.0}
@@ -184,7 +184,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_KEYPOINT_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="ポーズ姿勢 (TRACK_POSE_WEIGHT)"
+            label="ポーズ姿勢"
             value={values.TRACK_POSE_WEIGHT ?? 0.2}
             min={0.0}
             max={1.0}
@@ -192,7 +192,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_POSE_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="ボックス形状 (TRACK_BBOX_WEIGHT)"
+            label="ボックス形状"
             value={values.TRACK_BBOX_WEIGHT ?? 0.1}
             min={0.0}
             max={1.0}
@@ -203,7 +203,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-4 gap-3 mt-2">
           <SliderWithInput
-            label="速度平滑化 (TRACK_VELOCITY_SMOOTHING)"
+            label="速度平滑化"
             value={values.TRACK_VELOCITY_SMOOTHING ?? 0.35}
             min={0.0}
             max={1.0}
@@ -211,7 +211,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_VELOCITY_SMOOTHING', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="生ID一致ボーナス (TRACK_RAW_ID_BONUS)"
+            label="生ID一致ボーナス"
             value={values.TRACK_RAW_ID_BONUS ?? 2.0}
             min={0.0}
             max={10.0}
@@ -219,7 +219,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_RAW_ID_BONUS', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="移動予測重み (TRACK_PREDICTED_BOX_WEIGHT)"
+            label="移動予測重み"
             value={values.TRACK_PREDICTED_BOX_WEIGHT ?? 0.35}
             min={0.0}
             max={1.0}
@@ -227,7 +227,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('TRACK_PREDICTED_BOX_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="先読み最大フレーム (TRACK_PREDICTION_MAX_FRAMES)"
+            label="先読み最大フレーム"
             value={values.TRACK_PREDICTION_MAX_FRAMES ?? 2}
             min={0}
             max={10}
@@ -243,7 +243,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">骨格追跡・時系列関連付け重み</h4>
         <div className="grid grid-cols-3 gap-3">
           <SliderWithInput
-            label="関節点重み (POSE_TRACK_KEYPOINT_WEIGHT)"
+            label="関節点重み"
             value={values.POSE_TRACK_KEYPOINT_WEIGHT ?? 0.65}
             min={0.0}
             max={1.0}
@@ -251,7 +251,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('POSE_TRACK_KEYPOINT_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="中心座標重み (POSE_TRACK_CENTER_WEIGHT)"
+            label="中心座標重み"
             value={values.POSE_TRACK_CENTER_WEIGHT ?? 0.25}
             min={0.0}
             max={1.0}
@@ -259,7 +259,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('POSE_TRACK_CENTER_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="身体形状重み (POSE_TRACK_SHAPE_WEIGHT)"
+            label="身体形状重み"
             value={values.POSE_TRACK_SHAPE_WEIGHT ?? 0.1}
             min={0.0}
             max={1.0}
@@ -270,7 +270,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
 
         <div className="grid grid-cols-3 gap-3 mt-2">
           <SliderWithInput
-            label="クロップIoU重み (POSE_BOX_IOU_WEIGHT)"
+            label="クロップIoU重み"
             value={values.POSE_BOX_IOU_WEIGHT ?? 2.0}
             min={0.0}
             max={10.0}
@@ -278,7 +278,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('POSE_BOX_IOU_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="クロップ中心重み (POSE_BOX_CENTER_WEIGHT)"
+            label="クロップ中心重み"
             value={values.POSE_BOX_CENTER_WEIGHT ?? 0.5}
             min={0.0}
             max={5.0}
@@ -286,7 +286,7 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
             onChange={(v) => setFieldValue('POSE_BOX_CENTER_WEIGHT', parseFloat(v.toFixed(2)))}
           />
           <SliderWithInput
-            label="時間的連続性重み (POSE_TEMPORAL_WEIGHT)"
+            label="時間的連続性重み"
             value={values.POSE_TEMPORAL_WEIGHT ?? 0.5}
             min={0.0}
             max={5.0}

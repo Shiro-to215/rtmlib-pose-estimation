@@ -5,7 +5,6 @@ import { useSettingsForm } from './hooks/useSettingsForm';
 import { DefaultIoCard } from './cards/DefaultIoCard';
 import { JobIoCard } from './cards/JobIoCard';
 import { GeneralOutputTab } from './cards/GeneralOutputTab';
-import { DetectionConfidenceTab } from './cards/DetectionConfidenceTab';
 import { TrackingWeightsTab } from './cards/TrackingWeightsTab';
 import { VisualizationTab } from './cards/VisualizationTab';
 
@@ -28,7 +27,7 @@ export interface SettingsViewProps {
   ) => Promise<boolean>;
 }
 
-type TabType = 'general' | 'detection' | 'tracking' | 'visualization';
+type TabType = 'general' | 'tracking' | 'visualization';
 
 const JOB_SCOPED_SETTING_KEYS = new Set([
   'INPUT_ROOT',
@@ -297,7 +296,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
-        {/* If searching: Show filtered search results; Else: show 4 tabs */}
+        {/* If searching: Show filtered search results; Else: show 3 tabs */}
         {searchQuery.trim() ? (
           <div className="space-y-4">
             <div className="text-xs font-bold text-[#475569] pb-2 border-b border-[#E2E8F0]">
@@ -306,12 +305,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* Filtered view includes all matching widgets */}
             <div className="space-y-4">
               <GeneralOutputTab
-                values={values}
-                setFieldValue={setFieldValue}
-                choices={systemInfo.choices}
-                errors={errors}
-              />
-              <DetectionConfidenceTab
                 values={values}
                 setFieldValue={setFieldValue}
                 choices={systemInfo.choices}
@@ -328,7 +321,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         ) : (
           <>
-            {/* 4-Tab Navigation */}
+            {/* 3-Tab Navigation */}
             <div className="flex border-b border-[#CBD5E1] mb-4 flex-shrink-0">
               <button
                 onClick={() => setActiveTab('general')}
@@ -339,16 +332,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 }`}
               >
                 基本・出力設定
-              </button>
-              <button
-                onClick={() => setActiveTab('detection')}
-                className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'detection'
-                    ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                    : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-                }`}
-              >
-                検出・信頼度設定
                 {rtmlibWarning && (
                   <span className="ml-1.5 w-2 h-2 inline-block rounded-full bg-[#C8332B]" />
                 )}
@@ -379,14 +362,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="flex-1 pb-4">
               {activeTab === 'general' && (
                 <GeneralOutputTab
-                  values={values}
-                  setFieldValue={setFieldValue}
-                  choices={systemInfo.choices}
-                  errors={errors}
-                />
-              )}
-              {activeTab === 'detection' && (
-                <DetectionConfidenceTab
                   values={values}
                   setFieldValue={setFieldValue}
                   choices={systemInfo.choices}

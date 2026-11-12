@@ -17,14 +17,14 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">描画要素の表示・非表示</h4>
         <div className="grid grid-cols-2 gap-4">
           <ToggleSwitch
-            label="骨格ライン・関節描画 (DRAW_SKELETON)"
+            label="骨格ライン・関節描画"
             description="出力動画に人物骨格ラインと関節点を描画します"
             checked={values.DRAW_SKELETON !== false}
             onChange={(v) => setFieldValue('DRAW_SKELETON', v)}
           />
 
           <ToggleSwitch
-            label="バウンディングボックス描画 (DRAW_BBOX)"
+            label="バウンディングボックス描画"
             description="出力動画に人物の検出枠および追跡IDを描画します"
             checked={values.DRAW_BBOX !== false}
             onChange={(v) => setFieldValue('DRAW_BBOX', v)}
@@ -36,7 +36,7 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">描画スタイル・サイズ調整</h4>
         <div className="grid grid-cols-3 gap-3">
           <SliderWithInput
-            label="骨格ライン線幅 (SKELETON_LINE_WIDTH)"
+            label="骨格ライン線幅"
             description="骨格ボーンの描画太さ"
             value={values.SKELETON_LINE_WIDTH ?? 2}
             min={1}
@@ -47,7 +47,7 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
           />
 
           <SliderWithInput
-            label="関節点サークル半径 (KEYPOINT_RADIUS)"
+            label="関節点サークル半径"
             description="各関節キーポイントの円半径"
             value={values.KEYPOINT_RADIUS ?? 4}
             min={1}
@@ -58,7 +58,7 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
           />
 
           <SliderWithInput
-            label="ラベル文字倍率 (LABEL_FONT_SCALE)"
+            label="ラベル文字倍率"
             description="追跡IDやフレーム番号テキストのフォント倍率"
             value={values.LABEL_FONT_SCALE ?? 0.7}
             min={0.3}
