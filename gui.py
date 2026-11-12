@@ -1438,6 +1438,14 @@ def fill_target_box_gaps(frame_detections, target_stable_id):
     return target_boxes
 
 
+def _is_torch_cuda_available(torch_mod) -> bool:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
+        return bool(torch_mod.cuda.is_available())
+
+
 def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
     """両方の推論エンジンで使えるデバイスを選び、CUDA DLLを読み込みます。"""
     import torch
@@ -1448,13 +1456,13 @@ def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
     ):
         raise ValueError("DEVICE は auto / cpu / cuda / cuda:番号 を指定してください。")
     if device == "cpu":
-        print("実行デバイス: CPU（YOLO・姿勢推定）", flush=True)
+        print("実行デバイス: CPU", flush=True)
         return "cpu", "cpu"
 
     reason = None
     if backend != "onnxruntime":
         reason = "GPU実行には BACKEND=onnxruntime を指定してください。"
-    elif not torch.cuda.is_available():
+    elif not _is_torch_cuda_available(torch):
         reason = "PyTorchでCUDAを利用できません。GPU版PyTorchとNVIDIAドライバーを確認してください。"
     else:
         import onnxruntime as ort
@@ -1467,36 +1475,44 @@ def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
     if reason is not None:
         if device != "auto":
             raise RuntimeError(reason)
-        print(f"{reason}\n実行デバイス: CPU（YOLO・姿勢推定）", flush=True)
+        print(f"実行デバイス: CPU（{reason}）", flush=True)
         return "cpu", "cpu"
 
     index = int(device.split(":")[1]) if ":" in device else 0
     if index >= torch.cuda.device_count():
         raise ValueError(f"GPU番号 {index} は存在しません。")
-    print(f"実行デバイス: CUDA:{index} / {torch.cuda.get_device_name(index)}（YOLO・姿勢推定）", flush=True)
+    print(f"実行デバイス: CUDA:{index} ({torch.cuda.get_device_name(index)})", flush=True)
     return f"cuda:{index}", f"cuda:{index}"
 
 
 def create_pose_model(device: str):
+    import contextlib
+    import io
+    import re
+
     selection = resolve_rtmlib_selection(
         RTMLIB_POSE_MODEL,
         RTMLIB_POSE_INPUT_SIZE,
     )
     pose_asset = selection["pose_asset"]
     print(
-        f"RTMLIB姿勢モデル: RTMPose-{selection['pose_model'].upper()} "
-        f"({selection['pose_resolution']}) [YOLOXスキップ・YOLO11枠直接入力]",
+        f"姿勢モデル: RTMPose-{selection['pose_model'].upper()} "
+        f"({selection['pose_resolution']})",
         flush=True,
     )
-    model = RTMPose(
-        onnx_model=pose_asset["url"],
-        model_input_size=pose_asset["input_size"],
-        backend=BACKEND,
-        device=device,
-    )
+    init_stdout = io.StringIO()
+    with contextlib.redirect_stdout(init_stdout):
+        model = RTMPose(
+            onnx_model=pose_asset["url"],
+            model_input_size=pose_asset["input_size"],
+            backend=BACKEND,
+            device=device,
+        )
+    for line in init_stdout.getvalue().splitlines():
+        if line.strip() and not re.match(r"^load .+ with .+ backend$", line.strip()):
+            print(line, flush=True)
     if BACKEND == "onnxruntime":
         providers = model.session.get_providers()
-        print(f"RTMLIB pose_model: {', '.join(providers)}", flush=True)
         if device.startswith("cuda") and "CUDAExecutionProvider" not in providers:
             raise RuntimeError(
                 "RTMLIB pose_model のCUDA初期化に失敗しました。"
@@ -2191,6 +2207,12 @@ def run_analysis() -> None:
 def run_analysis_worker(config_path: Path) -> None:
     """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
     import importlib
+    import os
+    import warnings
+
+    os.environ.setdefault("ORT_LOGGING_LEVEL", "3")
+    os.environ.setdefault("YOLO_VERBOSE", "False")
+    warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
 
     globals()["cv2"] = importlib.import_module("cv2")
     rtmlib = importlib.import_module("rtmlib")

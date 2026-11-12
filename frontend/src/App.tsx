@@ -316,7 +316,11 @@ export const App: React.FC = () => {
         thumbnail
       );
       if (created && created.length > 0) {
-        setQueue((prev) => [...prev, ...created]);
+        setQueue((prev) => {
+          const existingIds = new Set(prev.map((j) => j.id));
+          const uniqueCreated = created.filter((j) => !existingIds.has(j.id));
+          return uniqueCreated.length > 0 ? [...prev, ...uniqueCreated] : prev;
+        });
         setActiveView('queue');
         return true;
       }

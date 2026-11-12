@@ -394,7 +394,6 @@ class BackendApi:
             if self.thumbnail_provider and hasattr(self.thumbnail_provider, "enqueue_jobs"):
                 self.thumbnail_provider.enqueue_jobs(created)
 
-            self._push_queue_update()
             return [self.serialize_job(job) for job in created]
 
     def remove_jobs(self, job_ids: list[str]) -> list[dict[str, Any]]:

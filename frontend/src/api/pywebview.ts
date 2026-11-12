@@ -571,7 +571,6 @@ class BrowserMockBackend implements BackendApi {
       };
     });
     this._jobs.push(...created);
-    this._emitQueueUpdate();
     return created;
   }
 
