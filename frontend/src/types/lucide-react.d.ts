@@ -38,4 +38,6 @@ declare module 'lucide-react' {
   export const FileText: LucideIcon;
   export const CheckSquare: LucideIcon;
   export const Save: LucideIcon;
+  export const Cpu: LucideIcon;
+  export const Sparkles: LucideIcon;
 }

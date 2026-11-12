@@ -364,8 +364,14 @@ class BrowserMockBackend implements BackendApi {
         YOLO_CLASSES: [0],
         YOLO_TRACK_ID: null,
         CSV_MAX_PERSONS: 3,
+        POSE_ENGINE: 'rtmpose',
         RTMLIB_POSE_MODEL: 'x',
         RTMLIB_POSE_INPUT_SIZE: '384x288',
+        RTMPOSE_BATCH_SIZE: 1,
+        VITPOSE_MODEL: 'h',
+        VITPOSE_INPUT_SIZE: '256x192',
+        VITPOSE_BATCH_SIZE: 4,
+        VITPOSE_FLIP_TEST: true,
         YOLO_IMAGE_SIZE: 1280,
         YOLO_CONFIDENCE: 0.20,
         YOLO_IOU: 0.50,
@@ -492,16 +498,24 @@ class BrowserMockBackend implements BackendApi {
         choices: {
           YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
           DEVICE: ['auto', 'cpu', 'cuda'],
+          POSE_ENGINE: ['rtmpose', 'vitpose'],
           RTMLIB_POSE_MODEL: ['t', 's', 'm', 'l', 'x'],
           RTMLIB_POSE_INPUT_SIZE: ['256x192', '384x288'],
+          VITPOSE_MODEL: ['s', 'b', 'l', 'h'],
+          VITPOSE_INPUT_SIZE: ['256x192'],
           YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
           BACKEND: ['onnxruntime', 'opencv'],
         },
         labels: {
           YOLO_MODEL: 'YOLOモデル',
           DEVICE: '推論デバイス',
+          POSE_ENGINE: '姿勢推定エンジン',
           RTMLIB_POSE_MODEL: 'RTMPoseモデル',
           RTMLIB_POSE_INPUT_SIZE: 'RTMPose入力解像度',
+          VITPOSE_MODEL: 'ViTPose++モデルサイズ',
+          VITPOSE_INPUT_SIZE: 'ViTPose++入力解像度',
+          VITPOSE_BATCH_SIZE: 'ViTPose++バッチサイズ',
+          VITPOSE_FLIP_TEST: 'Flip Test（左右反転TTA）',
           YOLO_TRACKER: 'トラッカー設定',
           BACKEND: '推論バックエンド',
         },
@@ -512,8 +526,11 @@ class BrowserMockBackend implements BackendApi {
       choices: {
         YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
         DEVICE: ['auto', 'cpu', 'cuda'],
+        POSE_ENGINE: ['rtmpose', 'vitpose'],
         RTMLIB_POSE_MODEL: ['t', 's', 'm', 'l', 'x'],
         RTMLIB_POSE_INPUT_SIZE: ['256x192', '384x288'],
+        VITPOSE_MODEL: ['s', 'b', 'l', 'h'],
+        VITPOSE_INPUT_SIZE: ['256x192'],
         YOLO_TRACKER: ['bytetrack.yaml', 'botsort.yaml'],
         BACKEND: ['onnxruntime', 'opencv'],
       },
@@ -561,8 +578,12 @@ class BrowserMockBackend implements BackendApi {
           OUTPUT_FOLDER_NAME: stem,
         },
         summary: {
+          pose_engine: settings?.POSE_ENGINE || 'rtmpose',
           pose_model: settings?.RTMLIB_POSE_MODEL || 'x',
           pose_input_size: settings?.RTMLIB_POSE_INPUT_SIZE || '384x288',
+          vitpose_model: settings?.VITPOSE_MODEL || 'h',
+          vitpose_input_size: settings?.VITPOSE_INPUT_SIZE || '256x192',
+          vitpose_flip_test: settings?.VITPOSE_FLIP_TEST ?? true,
           yolo_model: settings?.YOLO_MODEL || 'yolo11m.pt',
           device: settings?.DEVICE || 'auto',
           track_id: settings?.YOLO_TRACK_ID ?? null,
@@ -719,6 +740,24 @@ class BrowserMockBackend implements BackendApi {
       return { valid: false, error: `RTMPose-X は ${inputSize} に対応していません。使用可能: 384x288` };
     }
     return { valid: true };
+  }
+
+  async validate_pose_settings(
+    settings: Record<string, any>
+  ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }> {
+    const engine = String(settings?.POSE_ENGINE || 'rtmpose').toLowerCase();
+    if (engine === 'vitpose') {
+      const m = String(settings?.VITPOSE_MODEL || 'h').toLowerCase();
+      const res = String(settings?.VITPOSE_INPUT_SIZE || '256x192').toLowerCase();
+      if (!['s', 'b', 'l', 'h'].includes(m) || res !== '256x192') {
+        return { valid: false, error: 'ViTPose++ は S/B/L/H かつ 256x192 のみ対応しています。' };
+      }
+      return { valid: true };
+    }
+    return this.validate_rtmlib_settings(
+      String(settings?.RTMLIB_POSE_MODEL || 'x'),
+      String(settings?.RTMLIB_POSE_INPUT_SIZE || '384x288')
+    );
   }
 
   async get_output_preview_names(folderPath: string): Promise<Record<string, string>> {

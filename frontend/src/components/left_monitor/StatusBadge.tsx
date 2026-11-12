@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type StatusBadgeState = 'idle' | 'running' | 'yolo' | 'rtmpose' | 'stopping';
+export type StatusBadgeState = 'idle' | 'running' | 'yolo' | 'rtmpose' | 'vitpose' | 'stopping';
 
 export interface StatusBadgeProps {
   state: StatusBadgeState;
@@ -28,6 +28,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ state, className = '' 
       text: 'RTMPose 処理中',
       bg: 'bg-[#E0F2FE]',
       textCol: 'text-[#0369A1]',
+    },
+    vitpose: {
+      text: 'ViTPose++ 処理中',
+      bg: 'bg-[#EDE9FE]',
+      textCol: 'text-[#6D28D9]',
     },
     stopping: {
       text: '中断処理中',

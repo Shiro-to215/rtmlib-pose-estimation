@@ -21,6 +21,8 @@ from typing import Any, Callable, Optional, Sequence
 import webview
 
 import gui
+from pose_estimators import validate_pose_settings as _validate_pose_settings
+from pose_estimators.factory import normalize_pose_engine
 from reservation_queue import Reservation, ReservationQueue, set_output, write_json
 from .worker_manager import AnalysisWorkerManager
 
@@ -104,14 +106,7 @@ def serialize_reservation(
         "thumbnail": thumbnail,
         "thumbnail_info": thumbnail_info,
         "settings": settings,
-        "summary": {
-            "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
-            "pose_input_size": settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
-            "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
-            "device": settings.get("DEVICE", "auto"),
-            "track_id": settings.get("YOLO_TRACK_ID"),
-            "csv_max_persons": settings.get("CSV_MAX_PERSONS", 3),
-        },
+        "summary": gui.build_job_summary(settings),
     }
 
 
@@ -464,11 +459,8 @@ class BackendApi:
             merged.update(sanitized)
             merged = gui.normalize_legacy_rtmlib_settings(merged)
 
-            # Validate RTMLib if changed
-            pose_model = merged.get("RTMLIB_POSE_MODEL", "x")
-            input_size = merged.get("RTMLIB_POSE_INPUT_SIZE", "384x288")
-            if self._resolve_rtmlib_fn:
-                self._resolve_rtmlib_fn(pose_model, input_size)
+            # Validate active pose engine settings
+            self._validate_active_pose_engine(merged)
 
             updated = self.reservations.update_job(
                 job_id=job_id,
@@ -504,10 +496,7 @@ class BackendApi:
             sanitized["OUTPUT_ROOT"] = resolved_root
 
             merged_defaults = gui.normalize_legacy_rtmlib_settings({**self.default_settings, **sanitized})
-            pose_model = merged_defaults.get("RTMLIB_POSE_MODEL", "x")
-            input_size = merged_defaults.get("RTMLIB_POSE_INPUT_SIZE", "384x288")
-            if self._resolve_rtmlib_fn:
-                self._resolve_rtmlib_fn(pose_model, input_size)
+            self._validate_active_pose_engine(merged_defaults)
 
             self.default_settings = merged_defaults
             for job_key in JOB_SCOPED_SETTING_KEYS:
@@ -602,6 +591,23 @@ class BackendApi:
         except ValueError as err:
             return {"valid": False, "error": str(err)}
 
+    def validate_pose_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """Validates active pose engine combination without modifying settings."""
+        try:
+            resolved = self._validate_active_pose_engine(settings)
+            return {"valid": True, "resolved": resolved}
+        except ValueError as err:
+            return {"valid": False, "error": str(err)}
+
+    def _validate_active_pose_engine(self, settings: dict[str, Any]) -> dict[str, Any]:
+        engine = normalize_pose_engine(settings.get("POSE_ENGINE", "rtmpose"))
+        if engine == "rtmpose":
+            pose_model = settings.get("RTMLIB_POSE_MODEL", "x")
+            input_size = settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288")
+            if self._resolve_rtmlib_fn is not None:
+                return self._resolve_rtmlib_fn(pose_model, input_size)
+        return _validate_pose_settings(settings)
+
     def get_output_preview_names(self, folder_path: str) -> dict[str, str]:
         """Returns the 5 standard output filenames for destination folder preview."""
         if not folder_path or not isinstance(folder_path, (str, Path)):
@@ -645,7 +651,7 @@ class BackendApi:
                 except (ValueError, TypeError):
                     pass
 
-        # Clamp batch size settings to 1..512
+        # Clamp batch size settings
         max_batch = int(getattr(gui, "MAX_BATCH_SIZE", 512))
         for batch_key in ("YOLO_BATCH_SIZE", "RTMPOSE_BATCH_SIZE"):
             if batch_key in sanitized:
@@ -654,6 +660,22 @@ class BackendApi:
                 except (ValueError, TypeError):
                     val = 1
                 sanitized[batch_key] = max(1, min(max_batch, val))
+
+        if "VITPOSE_BATCH_SIZE" in sanitized:
+            try:
+                val = int(float(sanitized["VITPOSE_BATCH_SIZE"]))
+            except (ValueError, TypeError):
+                val = 4
+            sanitized["VITPOSE_BATCH_SIZE"] = max(1, min(8, val))
+
+        if "POSE_ENGINE" in sanitized:
+            sanitized["POSE_ENGINE"] = normalize_pose_engine(sanitized["POSE_ENGINE"])
+
+        if "VITPOSE_MODEL" in sanitized:
+            sanitized["VITPOSE_MODEL"] = str(sanitized["VITPOSE_MODEL"] or "h").strip().lower()
+
+        if "VITPOSE_INPUT_SIZE" in sanitized:
+            sanitized["VITPOSE_INPUT_SIZE"] = str(sanitized["VITPOSE_INPUT_SIZE"] or "256x192").strip().lower()
 
         # Float keys
         for k in self.float_keys:

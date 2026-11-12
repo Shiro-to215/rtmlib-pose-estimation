@@ -42,6 +42,11 @@ export const LeftMonitorPane: React.FC<LeftMonitorPaneProps> = ({
       progressTone = 'yolo';
       phaseTitle = 'YOLO';
       subtitle = '人物検出・追跡 (1/2)';
+    } else if (upperPhase.includes('VITPOSE')) {
+      badgeState = 'vitpose';
+      progressTone = 'rtmpose';
+      phaseTitle = 'ViTPose++';
+      subtitle = '骨格推定 (2/2)';
     } else if (upperPhase.includes('RTM') || upperPhase === 'POSE' || upperPhase.includes('RTMLIB')) {
       badgeState = 'rtmpose';
       progressTone = 'rtmpose';

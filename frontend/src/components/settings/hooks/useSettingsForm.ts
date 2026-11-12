@@ -57,15 +57,49 @@ export function useSettingsForm(
     ) {
       return 'バッチサイズは 1 〜 512 の整数で指定してください。';
     }
+    if (
+      key === 'VITPOSE_BATCH_SIZE' &&
+      (!Number.isInteger(val) || val < 1 || val > 8)
+    ) {
+      return 'ViTPose++ のバッチサイズは 1 〜 8 の整数で指定してください。';
+    }
     if (key === 'YOLO_CLASSES') {
       if (!Array.isArray(val) || val.length === 0) return '検出対象クラスIDを1つ以上入力してください。';
     }
     return null;
   };
 
-  // Debounced RTMLib compatibility check
+  // Debounced pose engine compatibility check
   useEffect(() => {
+    const poseEngine = String(values['POSE_ENGINE'] || 'rtmpose').toLowerCase();
     const timer = setTimeout(async () => {
+      if (poseEngine === 'vitpose') {
+        const vitModel = String(values['VITPOSE_MODEL'] || 'h').toLowerCase();
+        const vitInput = String(values['VITPOSE_INPUT_SIZE'] || '256x192').toLowerCase();
+        if (!['s', 'b', 'l', 'h'].includes(vitModel) || vitInput !== '256x192') {
+          setRtmlibWarning('ViTPose++ は S/B/L/H かつ 256x192 のみ対応しています。');
+          return;
+        }
+        const api = getBackendApi();
+        if (api && api.validate_pose_settings) {
+          try {
+            const res = await api.validate_pose_settings({
+              POSE_ENGINE: 'vitpose',
+              VITPOSE_MODEL: vitModel,
+              VITPOSE_INPUT_SIZE: vitInput,
+            });
+            if (!res.valid) {
+              setRtmlibWarning(res.error || '無効なViTPose++設定です');
+              return;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        setRtmlibWarning(null);
+        return;
+      }
+
       const poseModel = values['RTMLIB_POSE_MODEL'] || 'x';
       const inputSize = values['RTMLIB_POSE_INPUT_SIZE'] || '384x288';
 
@@ -97,8 +131,11 @@ export function useSettingsForm(
 
     return () => clearTimeout(timer);
   }, [
+    values['POSE_ENGINE'],
     values['RTMLIB_POSE_MODEL'],
     values['RTMLIB_POSE_INPUT_SIZE'],
+    values['VITPOSE_MODEL'],
+    values['VITPOSE_INPUT_SIZE'],
   ]);
 
   const setFieldValue = (k: string, v: any) => {

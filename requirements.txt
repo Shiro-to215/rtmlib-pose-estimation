@@ -2,6 +2,8 @@ rtmlib==0.0.16
 opencv-python>=4.8
 onnxruntime>=1.16
 ultralytics>=8.3
+transformers>=4.49.0
+scipy>=1.11
 lap>=0.5.12
 Pillow>=10.0
 pywebview>=6.0

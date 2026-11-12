@@ -36,6 +36,9 @@ export interface BackendApi {
     poseModel: string,
     inputSize: string
   ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }>;
+  validate_pose_settings?(
+    settings: Record<string, any>
+  ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }>;
   get_output_preview_names(folderPath: string): Promise<Record<string, string>>;
 }
 

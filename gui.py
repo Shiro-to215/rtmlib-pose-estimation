@@ -12,6 +12,19 @@ import threading
 from pathlib import Path
 from time import perf_counter
 
+from pose_estimators import (
+    BasePoseEstimator,
+    RTMLIB_POSE_ASSETS,
+    VITPOSE_ASSETS,
+    clear_cuda_cache as _estimator_clear_cuda_cache,
+    create_pose_estimator as _factory_create_pose_estimator,
+    draw_pose_skeleton,
+    resolve_rtmlib_selection,
+    resolve_vitpose_selection,
+    validate_pose_settings,
+)
+from pose_estimators.factory import normalize_pose_engine
+
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = BASE_DIR / "gui_settings.json"
 HOME = Path.home()
@@ -75,11 +88,16 @@ COCO_KEYPOINTS = [
     "左股関節", "右股関節", "左膝", "右膝", "左足首", "右足首",
 ]
 
+POSE_ENGINE = "rtmpose"
 BACKEND = "onnxruntime"
 DEVICE = "auto"
 RTMLIB_POSE_MODEL = "x"
 RTMLIB_POSE_INPUT_SIZE = "384x288"
 RTMPOSE_BATCH_SIZE = 1
+VITPOSE_MODEL = "h"
+VITPOSE_INPUT_SIZE = "256x192"
+VITPOSE_BATCH_SIZE = 4
+VITPOSE_FLIP_TEST = True
 
 #各種設定
 KEYPOINT_THRESHOLD = 0.45
@@ -116,8 +134,9 @@ ENGINE_SETTING_NAMES = (
     "OUTPUT_CROP_SKELETON_VIDEO_NAME", "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
     "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID",
     "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
-    "BACKEND", "DEVICE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-    "RTMPOSE_BATCH_SIZE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
+    "POSE_ENGINE", "BACKEND", "DEVICE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+    "RTMPOSE_BATCH_SIZE", "VITPOSE_MODEL", "VITPOSE_INPUT_SIZE",
+    "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
     "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
@@ -154,8 +173,10 @@ GROUPS = [
                     "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
                     "TARGET_BOX_FILL_MAX_FRAMES"]),
-    ("姿勢推定・追跡", ["RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-                     "RTMPOSE_BATCH_SIZE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
+    ("姿勢推定・追跡", ["POSE_ENGINE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
+                     "RTMPOSE_BATCH_SIZE", "VITPOSE_MODEL", "VITPOSE_INPUT_SIZE",
+                     "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "BACKEND", "DEVICE",
+                     "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
                      "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
                      "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
                      "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
@@ -176,15 +197,23 @@ LABELS = {
     "OUTPUT_DIRECTORY": "出力先フォルダ",
     "YOLO_MODEL": "YOLOモデルサイズ",
     "YOLO_BATCH_SIZE": "YOLOバッチサイズ",
+    "POSE_ENGINE": "姿勢推定エンジン",
     "RTMLIB_POSE_MODEL": "RTMPoseモデル",
     "RTMLIB_POSE_INPUT_SIZE": "RTMPose入力解像度",
     "RTMPOSE_BATCH_SIZE": "RTMPoseバッチサイズ",
+    "VITPOSE_MODEL": "ViTPose++モデルサイズ",
+    "VITPOSE_INPUT_SIZE": "ViTPose++入力解像度",
+    "VITPOSE_BATCH_SIZE": "ViTPose++バッチサイズ",
+    "VITPOSE_FLIP_TEST": "Flip Test（左右反転TTA）",
     "DEVICE": "実行デバイス（YOLO・姿勢推定）",
 }
 CHOICES = {
     "YOLO_MODEL": ("n", "s", "m", "l", "x"),
+    "POSE_ENGINE": ("rtmpose", "vitpose"),
     "RTMLIB_POSE_MODEL": ("t", "s", "m", "l", "x"),
     "RTMLIB_POSE_INPUT_SIZE": ("256x192", "384x288"),
+    "VITPOSE_MODEL": ("s", "b", "l", "h"),
+    "VITPOSE_INPUT_SIZE": ("256x192",),
     "DEVICE": ("auto", "cpu", "cuda"),
 }
 
@@ -200,45 +229,16 @@ _REMOVED_RTMLIB_SETTING_KEYS = (
     "RTMLIB_DETECTOR_NMS_THRESHOLD",
     "OUTPUT_YOLO_VIDEO_NAME",
 )
-RTMLIB_POSE_ASSETS = {
-    "t": {
-        "256x192": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip",
-            "input_size": (192, 256),
-        },
-    },
-    "s": {
-        "256x192": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.zip",
-            "input_size": (192, 256),
-        },
-    },
-    "m": {
-        "256x192": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip",
-            "input_size": (192, 256),
-        },
-    },
-    "l": {
-        "256x192": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-body7_pt-body7_420e-256x192-4dba18fc_20230504.zip",
-            "input_size": (192, 256),
-        },
-        "384x288": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-body7_pt-body7_420e-384x288-3f5a1437_20230504.zip",
-            "input_size": (288, 384),
-        },
-    },
-    "x": {
-        "384x288": {
-            "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-x_simcc-body7_pt-body7_700e-384x288-71d7b7e9_20230629.zip",
-            "input_size": (288, 384),
-        },
-    },
-}
+
+
 def normalize_legacy_rtmlib_settings(settings: dict) -> dict:
     """Convert legacy MODEL_MODE / 'mode' / unused detector keys into explicit pose settings."""
     out = dict(settings)
+    if "POSE_ENGINE" in out:
+        out["POSE_ENGINE"] = normalize_pose_engine(out.get("POSE_ENGINE"))
+    else:
+        out["POSE_ENGINE"] = "rtmpose"
+
     legacy_mode = str(out.get("MODEL_MODE") or "performance")
     mode_pose, mode_resolution = _LEGACY_MODE_POSE.get(legacy_mode, ("x", "384x288"))
 
@@ -267,23 +267,19 @@ def normalize_legacy_rtmlib_settings(settings: dict) -> dict:
     return out
 
 
-def resolve_rtmlib_selection(pose_model: str, pose_input_size: str) -> dict:
-    """Resolve RTMLib model choices to downloadable models and input sizes."""
-    if pose_model not in RTMLIB_POSE_ASSETS:
-        raise ValueError(f"不明なRTMPoseモデルです: {pose_model}")
-
-    pose_asset = RTMLIB_POSE_ASSETS[pose_model].get(pose_input_size)
-    if pose_asset is None:
-        available = " / ".join(RTMLIB_POSE_ASSETS[pose_model])
-        raise ValueError(
-            f"RTMPose-{pose_model.upper()} は {pose_input_size} に対応していません。"
-            f"使用できる解像度: {available}。"
-        )
-
+def build_job_summary(settings: dict) -> dict:
+    """Build UI summary fields for a serialized reservation job."""
     return {
-        "pose_model": pose_model,
-        "pose_resolution": pose_input_size,
-        "pose_asset": pose_asset,
+        "pose_engine": normalize_pose_engine(settings.get("POSE_ENGINE", "rtmpose")),
+        "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
+        "pose_input_size": settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
+        "vitpose_model": str(settings.get("VITPOSE_MODEL", "h")).lower(),
+        "vitpose_input_size": str(settings.get("VITPOSE_INPUT_SIZE", "256x192")),
+        "vitpose_flip_test": bool(settings.get("VITPOSE_FLIP_TEST", True)),
+        "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
+        "device": settings.get("DEVICE", "auto"),
+        "track_id": settings.get("YOLO_TRACK_ID"),
+        "csv_max_persons": settings.get("CSV_MAX_PERSONS", 3),
     }
 
 
@@ -998,7 +994,7 @@ def annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores) -
         dtype=np.float32,
     )
     local_scores = np.asarray([pose_scores], dtype=np.float32)
-    annotated_crop = draw_skeleton(
+    annotated_crop = draw_pose_skeleton(
         crop.copy(),
         local_kpts,
         local_scores,
@@ -1446,10 +1442,15 @@ def _is_torch_cuda_available(torch_mod) -> bool:
         return bool(torch_mod.cuda.is_available())
 
 
-def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
+def prepare_runtime(
+    backend: str,
+    device: str,
+    pose_engine: str = "rtmpose",
+) -> tuple[str, str]:
     """両方の推論エンジンで使えるデバイスを選び、CUDA DLLを読み込みます。"""
     import torch
 
+    engine = normalize_pose_engine(pose_engine)
     device = device.strip().lower()
     if device not in {"auto", "cpu", "cuda"} and not (
         device.startswith("cuda:") and device[5:].isdigit()
@@ -1460,11 +1461,11 @@ def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
         return "cpu", "cpu"
 
     reason = None
-    if backend != "onnxruntime":
+    if engine == "rtmpose" and backend != "onnxruntime":
         reason = "GPU実行には BACKEND=onnxruntime を指定してください。"
     elif not _is_torch_cuda_available(torch):
         reason = "PyTorchでCUDAを利用できません。GPU版PyTorchとNVIDIAドライバーを確認してください。"
-    else:
+    elif engine == "rtmpose":
         import onnxruntime as ort
 
         # PyTorchと同じCUDA/cuDNN DLLを使います（特にWindowsで必要）。
@@ -1485,40 +1486,38 @@ def prepare_runtime(backend: str, device: str) -> tuple[str, str]:
     return f"cuda:{index}", f"cuda:{index}"
 
 
-def create_pose_model(device: str):
-    import contextlib
-    import io
-    import re
+def _active_pose_settings_from_globals() -> dict:
+    return {
+        "POSE_ENGINE": globals().get("POSE_ENGINE", "rtmpose"),
+        "BACKEND": globals().get("BACKEND", "onnxruntime"),
+        "RTMLIB_POSE_MODEL": globals().get("RTMLIB_POSE_MODEL", "x"),
+        "RTMLIB_POSE_INPUT_SIZE": globals().get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
+        "VITPOSE_MODEL": globals().get("VITPOSE_MODEL", "h"),
+        "VITPOSE_INPUT_SIZE": globals().get("VITPOSE_INPUT_SIZE", "256x192"),
+        "VITPOSE_FLIP_TEST": globals().get("VITPOSE_FLIP_TEST", True),
+    }
 
-    selection = resolve_rtmlib_selection(
-        RTMLIB_POSE_MODEL,
-        RTMLIB_POSE_INPUT_SIZE,
+
+def create_pose_estimator_from_globals(device: str) -> BasePoseEstimator:
+    """Build the configured BasePoseEstimator (RTMPose or ViTPose++) for Pass 2."""
+    settings = _active_pose_settings_from_globals()
+    estimator = _factory_create_pose_estimator(settings, device)
+    print(f"姿勢モデル: {estimator.display_name}", flush=True)
+    return estimator
+
+
+def create_pose_model(device: str):
+    """Backward-compatible helper returning the underlying rtmlib RTMPose instance."""
+    from pose_estimators.rtmpose import RTMPoseEstimator
+
+    estimator = RTMPoseEstimator(
+        pose_model=RTMLIB_POSE_MODEL,
+        pose_input_size=RTMLIB_POSE_INPUT_SIZE,
+        backend=BACKEND,
+        device=device,
     )
-    pose_asset = selection["pose_asset"]
-    print(
-        f"姿勢モデル: RTMPose-{selection['pose_model'].upper()} "
-        f"({selection['pose_resolution']})",
-        flush=True,
-    )
-    init_stdout = io.StringIO()
-    with contextlib.redirect_stdout(init_stdout):
-        model = RTMPose(
-            onnx_model=pose_asset["url"],
-            model_input_size=pose_asset["input_size"],
-            backend=BACKEND,
-            device=device,
-        )
-    for line in init_stdout.getvalue().splitlines():
-        if line.strip() and not re.match(r"^load .+ with .+ backend$", line.strip()):
-            print(line, flush=True)
-    if BACKEND == "onnxruntime":
-        providers = model.session.get_providers()
-        if device.startswith("cuda") and "CUDAExecutionProvider" not in providers:
-            raise RuntimeError(
-                "RTMLIB pose_model のCUDA初期化に失敗しました。"
-                "CUDA/cuDNNのバージョンを確認するか、DEVICE=cpu を選択してください。"
-            )
-    return model
+    print(f"姿勢モデル: {estimator.display_name}", flush=True)
+    return estimator.raw_model
 
 
 MPEG4_MAX_TIMEBASE_DENOMINATOR = 65535
@@ -1849,11 +1848,11 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
 def run_analysis() -> None:
     import numpy as np
 
-    yolo_device, pose_device = prepare_runtime(BACKEND, DEVICE)
-    # 長いYOLO処理を始める前に、姿勢推定のCUDA初期化も確認します。
-    rtmlib_initialization_started_at = perf_counter()
-    pose_model = create_pose_model(pose_device)
-    rtmlib_initialization_seconds = perf_counter() - rtmlib_initialization_started_at
+    pose_settings = _active_pose_settings_from_globals()
+    pose_engine = normalize_pose_engine(pose_settings.get("POSE_ENGINE"))
+    validate_pose_settings(pose_settings)
+    yolo_device, pose_device = prepare_runtime(BACKEND, DEVICE, pose_engine=pose_engine)
+
     input_video = find_input_video()
     output_directory = OUTPUT_ROOT / OUTPUT_FOLDER_NAME
     default_names = output_names(output_directory)
@@ -1896,297 +1895,314 @@ def run_analysis() -> None:
     )
     yolo_elapsed_seconds = perf_counter() - yolo_started_at
 
-    rtmlib_started_at = perf_counter()
-    capture = cv2.VideoCapture(str(input_video))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not reopen input video: {input_video.resolve()}")
-    crop_w, crop_h = map(int, getattr(pose_model, "model_input_size", (288, 384)))
-    writer = None
-    crop_writer = None
-    crop_skeleton_writer = None
+    # Pass 1 (YOLO) が解放された後にのみ Pass 2 の姿勢推定モデルをロードする（12GB VRAM競合防止）
+    pose_init_started_at = perf_counter()
+    estimator = create_pose_estimator_from_globals(pose_device)
+    pose_init_seconds = perf_counter() - pose_init_started_at
+
     try:
-        writer, writer_fps = open_mp4v_writer(output_video, fps, width, height)
-        if not writer.isOpened():
-            raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
-        if writer_fps != fps:
-            print(
-                f"動画書き出しFPS調整: {fps:.6f} -> {writer_fps:.3f} (mp4v制限対応)",
-                flush=True,
-            )
-        crop_writer, _ = open_mp4v_writer(output_crop_video, fps, crop_w, crop_h)
-        if not crop_writer.isOpened():
-            raise RuntimeError(
-                f"Could not create crop output video: {output_crop_video.resolve()}"
-            )
-        crop_skeleton_writer, _ = open_mp4v_writer(
-            output_crop_skeleton_video, fps, crop_w, crop_h
-        )
-        if not crop_skeleton_writer.isOpened():
-            raise RuntimeError(
-                f"Could not create crop skeleton output video: {output_crop_skeleton_video.resolve()}"
-            )
-    except Exception:
-        for w in (crop_skeleton_writer, crop_writer, writer):
-            if w is not None:
-                w.release()
-        capture.release()
-        raise
-
-    effective_rtmpose_batch = resolve_effective_batch_size(
-        RTMPOSE_BATCH_SIZE, pose_device, "RTMPose"
-    )
-    effective_rtmpose_batch = cap_rtmpose_batch_by_vram(
-        effective_rtmpose_batch, pose_device, pose_model
-    )
-    if effective_rtmpose_batch > 1:
-        is_dynamic, dim_info = supports_dynamic_batch(pose_model)
-        if not is_dynamic:
-            print(
-                f"RTMPose: ONNXモデルが静的バッチ（shape[0]={dim_info}）のため、"
-                f"バッチサイズを 1 にフォールバックします（設定値: {effective_rtmpose_batch}）",
-                flush=True,
-            )
-            effective_rtmpose_batch = 1
-    print(f"RTMPoseバッチサイズ: {effective_rtmpose_batch}", flush=True)
-
-    black_crop = np.zeros((crop_h, crop_w, 3), dtype=np.uint8)
-
-    with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
-        csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
-        csv_writer.writeheader()
-
-        reader = AsyncFrameReader(
-            capture,
-            max_queue_size=max(8, min(48, effective_rtmpose_batch + 8)),
-            max_frames=len(target_boxes),
-        )
-        writer_queue_size = max(8, min(32, effective_rtmpose_batch + 8))
-        writer_worker = AsyncVideoWriter(writer, max_queue_size=writer_queue_size)
-        crop_writer_worker = AsyncVideoWriter(
-            crop_writer, max_queue_size=writer_queue_size
-        )
-        crop_skeleton_writer_worker = AsyncVideoWriter(
-            crop_skeleton_writer, max_queue_size=writer_queue_size
-        )
-        batch_buffer: dict = {}
-        frame_count = 0
-        target_box_count = 0
-        pose_call_count = 0
-        pose_success_count = 0
-        last_progress = 50
-        total_pose_frames = len(target_boxes)
-        if total_pose_frames > 0 and effective_rtmpose_batch > total_pose_frames:
-            effective_rtmpose_batch = total_pose_frames
-        aborted = False
-
-        def _emit_pose_frame(
-            idx, frame, target_box, restored_keypoints, pose_scores, crop_info=None
-        ) -> None:
-            nonlocal frame_count, target_box_count, pose_success_count, last_progress
-            if target_box is not None:
-                target_box_count += 1
-            if restored_keypoints is not None:
-                pose_success_count += 1
-                annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
-
-            if crop_info is not None:
-                crop_bgr, crop_center, crop_scale = crop_info
-                crop_writer_worker.write(crop_bgr)
-                crop_skeleton = render_pose_on_crop(
-                    crop_bgr,
-                    restored_keypoints,
-                    pose_scores,
-                    crop_center,
-                    crop_scale,
-                    pose_model.model_input_size,
+        pose_started_at = perf_counter()
+        capture = cv2.VideoCapture(str(input_video))
+        if not capture.isOpened():
+            raise RuntimeError(f"Could not reopen input video: {input_video.resolve()}")
+        crop_w, crop_h = estimator.model_input_size
+        phase_code = estimator.progress_phase
+        phase_label = "ViTPose++" if pose_engine == "vitpose" else "RTMPose"
+        writer = None
+        crop_writer = None
+        crop_skeleton_writer = None
+        try:
+            writer, writer_fps = open_mp4v_writer(output_video, fps, width, height)
+            if not writer.isOpened():
+                raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
+            if writer_fps != fps:
+                print(
+                    f"動画書き出しFPS調整: {fps:.6f} -> {writer_fps:.3f} (mp4v制限対応)",
+                    flush=True,
                 )
-                crop_skeleton_writer_worker.write(crop_skeleton)
-            else:
-                crop_writer_worker.write(black_crop)
-                crop_skeleton_writer_worker.write(black_crop)
+            crop_writer, _ = open_mp4v_writer(output_crop_video, fps, crop_w, crop_h)
+            if not crop_writer.isOpened():
+                raise RuntimeError(
+                    f"Could not create crop output video: {output_crop_video.resolve()}"
+                )
+            crop_skeleton_writer, _ = open_mp4v_writer(
+                output_crop_skeleton_video, fps, crop_w, crop_h
+            )
+            if not crop_skeleton_writer.isOpened():
+                raise RuntimeError(
+                    f"Could not create crop skeleton output video: {output_crop_skeleton_video.resolve()}"
+                )
+        except Exception:
+            for w in (crop_skeleton_writer, crop_writer, writer):
+                if w is not None:
+                    w.release()
+            capture.release()
+            raise
 
-            frame_data = {
-                "frame": idx,
-                "time_seconds": idx / fps,
-                "persons": [],
-            }
-            if restored_keypoints is not None:
-                person = {
-                    "person_id": target_stable_id,
-                    "yolo_track_id": target_stable_id,
+        requested_batch = (
+            globals().get("VITPOSE_BATCH_SIZE", 4)
+            if pose_engine == "vitpose"
+            else globals().get("RTMPOSE_BATCH_SIZE", 1)
+        )
+        effective_pose_batch = resolve_effective_batch_size(
+            requested_batch, pose_device, phase_label
+        )
+        effective_pose_batch = estimator.cap_batch_by_vram(
+            effective_pose_batch, pose_device
+        )
+        if effective_pose_batch > 1:
+            is_dynamic, dim_info = estimator.supports_dynamic_batch()
+            if not is_dynamic:
+                print(
+                    f"{phase_label}: モデルが静的バッチ（shape[0]={dim_info}）のため、"
+                    f"バッチサイズを 1 にフォールバックします（設定値: {effective_pose_batch}）",
+                    flush=True,
+                )
+                effective_pose_batch = 1
+        print(f"{phase_label}バッチサイズ: {effective_pose_batch}", flush=True)
+
+        black_crop = np.zeros((crop_h, crop_w, 3), dtype=np.uint8)
+
+        with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
+            csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
+            csv_writer.writeheader()
+
+            reader = AsyncFrameReader(
+                capture,
+                max_queue_size=max(8, min(48, effective_pose_batch + 8)),
+                max_frames=len(target_boxes),
+            )
+            writer_queue_size = max(8, min(32, effective_pose_batch + 8))
+            writer_worker = AsyncVideoWriter(writer, max_queue_size=writer_queue_size)
+            crop_writer_worker = AsyncVideoWriter(
+                crop_writer, max_queue_size=writer_queue_size
+            )
+            crop_skeleton_writer_worker = AsyncVideoWriter(
+                crop_skeleton_writer, max_queue_size=writer_queue_size
+            )
+            batch_buffer: dict = {}
+            frame_count = 0
+            target_box_count = 0
+            pose_call_count = 0
+            pose_success_count = 0
+            last_progress = 50
+            total_pose_frames = len(target_boxes)
+            if total_pose_frames > 0 and effective_pose_batch > total_pose_frames:
+                effective_pose_batch = total_pose_frames
+            aborted = False
+
+            def _emit_pose_frame(
+                idx, frame, target_box, restored_keypoints, pose_scores, crop_info=None
+            ) -> None:
+                nonlocal frame_count, target_box_count, pose_success_count, last_progress
+                if target_box is not None:
+                    target_box_count += 1
+                if restored_keypoints is not None:
+                    pose_success_count += 1
+                    annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
+
+                if crop_info is not None:
+                    crop_bgr, crop_center, crop_scale = crop_info
+                    crop_writer_worker.write(crop_bgr)
+                    crop_skeleton = estimator.render_pose_on_crop(
+                        crop_bgr,
+                        restored_keypoints,
+                        pose_scores,
+                        crop_center,
+                        crop_scale,
+                        KEYPOINT_THRESHOLD,
+                    )
+                    crop_skeleton_writer_worker.write(crop_skeleton)
+                else:
+                    crop_writer_worker.write(black_crop)
+                    crop_skeleton_writer_worker.write(black_crop)
+
+                frame_data = {
+                    "frame": idx,
+                    "time_seconds": idx / fps,
+                    "persons": [],
                 }
-                for kp_index, name in enumerate(COCO_KEYPOINTS):
-                    x, y = restored_keypoints[kp_index]
-                    person[name] = {
-                        "x": x,
-                        "y": y,
-                        "score": float(pose_scores[kp_index]),
+                if restored_keypoints is not None:
+                    person = {
+                        "person_id": target_stable_id,
+                        "yolo_track_id": target_stable_id,
                     }
-                frame_data["persons"].append(person)
+                    for kp_index, name in enumerate(COCO_KEYPOINTS):
+                        x, y = restored_keypoints[kp_index]
+                        person[name] = {
+                            "x": x,
+                            "y": y,
+                            "score": float(pose_scores[kp_index]),
+                        }
+                    frame_data["persons"].append(person)
 
-            csv_writer.writerow(make_csv_row(frame_data))
+                csv_writer.writerow(make_csv_row(frame_data))
 
-            if restored_keypoints is not None and target_box is not None:
-                label_x, label_y = map(int, target_box[:2])
+                if restored_keypoints is not None and target_box is not None:
+                    label_x, label_y = map(int, target_box[:2])
+                    cv2.putText(
+                        frame,
+                        f"YOLO stable_id: {target_stable_id}",
+                        (label_x, max(25, label_y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
                 cv2.putText(
                     frame,
-                    f"YOLO stable_id: {target_stable_id}",
-                    (label_x, max(25, label_y - 8)),
+                    f"Frame: {idx + 1}",
+                    (40, 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 255),
+                    1.0,
+                    (0, 0, 255),
                     2,
                     cv2.LINE_AA,
                 )
 
-            cv2.putText(
-                frame,
-                f"Frame: {idx + 1}",
-                (40, 80),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
+                writer_worker.write(frame)
+                frame_count += 1
 
-            writer_worker.write(frame)
-            frame_count += 1
+                if total_pose_frames > 0:
+                    progress = 50 + int(frame_count * 50 / total_pose_frames)
+                    if progress > last_progress:
+                        print(f"PROGRESS:{progress}:{phase_code}", flush=True)
+                        last_progress = progress
 
-            if total_pose_frames > 0:
-                progress = 50 + int(frame_count * 50 / total_pose_frames)
-                if progress > last_progress:
-                    print(f"PROGRESS:{progress}:RTMLIB", flush=True)
-                    last_progress = progress
+                if frame_count % 30 == 0:
+                    print(f"Processed {frame_count} frames", flush=True)
 
-            if frame_count % 30 == 0:
-                print(f"Processed {frame_count} frames", flush=True)
-
-        try:
-            print("PROGRESS:50:RTMLIB", flush=True)
-            next_read_idx = 0
-            eof = False
-            while next_read_idx < total_pose_frames and not eof:
-                buffered = []
-                valid_positions = []
-                max_buffered = min(
-                    effective_rtmpose_batch + 64,
-                    max(effective_rtmpose_batch * 2, 16),
-                )
-                while (
-                    next_read_idx < total_pose_frames
-                    and len(valid_positions) < effective_rtmpose_batch
-                    and len(buffered) < max_buffered
-                ):
-                    frame = reader.read_frame()
-                    if frame is None:
-                        eof = True
-                        break
-                    idx = next_read_idx
-                    next_read_idx += 1
-                    target_box = target_boxes[idx]
-                    is_valid = (
-                        _clamped_target_box(target_box, frame.shape[1], frame.shape[0])
-                        is not None
-                    )
-                    if not buffered and not is_valid:
-                        _emit_pose_frame(idx, frame, target_box, None, None, None)
-                        continue
-                    pos = len(buffered)
-                    buffered.append((idx, frame, target_box))
-                    if is_valid:
-                        valid_positions.append(pos)
-
-                if not buffered:
-                    continue
-
-                pose_results = [((None, None), None) for _ in buffered]
-                if valid_positions:
-                    pose_call_count += len(valid_positions)
-                    batch_items = [
-                        (buffered[pos][1], buffered[pos][2]) for pos in valid_positions
-                    ]
-                    if effective_rtmpose_batch > 1:
-                        def _run_pose_chunk(items_chunk):
-                            nonlocal effective_rtmpose_batch
-                            if effective_rtmpose_batch > 1:
-                                oom_occurred = False
-                                try:
-                                    return infer_pose_batch(
-                                        pose_model,
-                                        items_chunk,
-                                        fixed_batch_size=effective_rtmpose_batch,
-                                        batch_buffer=batch_buffer,
-                                        return_crop=True,
-                                    )
-                                except Exception as exc:
-                                    if not is_cuda_oom_error(exc):
-                                        raise
-                                    oom_occurred = True
-                                if oom_occurred:
-                                    batch_buffer.clear()
-                                    _clear_cuda_cache()
-                                    next_batch = max(1, min(effective_rtmpose_batch, len(items_chunk)) // 2)
-                                    print(
-                                        f"RTMPose: CUDAメモリ不足（OOM）が発生したため、バッチサイズを {next_batch} に下げて続行します。",
-                                        flush=True,
-                                    )
-                                    effective_rtmpose_batch = next_batch
-                                    out = []
-                                    for start in range(0, len(items_chunk), next_batch):
-                                        out.extend(_run_pose_chunk(items_chunk[start : start + next_batch]))
-                                    return out
-                            return [
-                                infer_pose_single(
-                                    pose_model, frm, box, return_crop=True
-                                )
-                                for frm, box in items_chunk
-                            ]
-
-                        inferred = _run_pose_chunk(batch_items)
-                    else:
-                        inferred = [
-                            infer_pose_single(pose_model, frm, box, return_crop=True)
-                            for frm, box in batch_items
-                        ]
-                    for pos, pose_with_crop in zip(valid_positions, inferred):
-                        pose_results[pos] = pose_with_crop
-
-                for (idx, frame, target_box), (
-                    (restored_keypoints, pose_scores),
-                    crop_info,
-                ) in zip(buffered, pose_results):
-                    _emit_pose_frame(
-                        idx,
-                        frame,
-                        target_box,
-                        restored_keypoints,
-                        pose_scores,
-                        crop_info,
-                    )
-        except BaseException:
-            aborted = True
-            raise
-        finally:
             try:
-                reader.close()
+                print(f"PROGRESS:50:{phase_code}", flush=True)
+                next_read_idx = 0
+                eof = False
+                while next_read_idx < total_pose_frames and not eof:
+                    buffered = []
+                    valid_positions = []
+                    max_buffered = min(
+                        effective_pose_batch + 64,
+                        max(effective_pose_batch * 2, 16),
+                    )
+                    while (
+                        next_read_idx < total_pose_frames
+                        and len(valid_positions) < effective_pose_batch
+                        and len(buffered) < max_buffered
+                    ):
+                        frame = reader.read_frame()
+                        if frame is None:
+                            eof = True
+                            break
+                        idx = next_read_idx
+                        next_read_idx += 1
+                        target_box = target_boxes[idx]
+                        is_valid = (
+                            _clamped_target_box(target_box, frame.shape[1], frame.shape[0])
+                            is not None
+                        )
+                        if not buffered and not is_valid:
+                            _emit_pose_frame(idx, frame, target_box, None, None, None)
+                            continue
+                        pos = len(buffered)
+                        buffered.append((idx, frame, target_box))
+                        if is_valid:
+                            valid_positions.append(pos)
+
+                    if not buffered:
+                        continue
+
+                    pose_results = [((None, None), None) for _ in buffered]
+                    if valid_positions:
+                        pose_call_count += len(valid_positions)
+                        batch_items = [
+                            (buffered[pos][1], buffered[pos][2]) for pos in valid_positions
+                        ]
+                        if effective_pose_batch > 1:
+                            def _run_pose_chunk(items_chunk):
+                                nonlocal effective_pose_batch
+                                if effective_pose_batch > 1:
+                                    oom_occurred = False
+                                    try:
+                                        fixed_bs = (
+                                            effective_pose_batch
+                                            if pose_engine == "rtmpose"
+                                            else None
+                                        )
+                                        return estimator.infer_batch(
+                                            items_chunk,
+                                            fixed_batch_size=fixed_bs,
+                                            batch_buffer=batch_buffer,
+                                            return_crop=True,
+                                        )
+                                    except Exception as exc:
+                                        if not is_cuda_oom_error(exc):
+                                            raise
+                                        oom_occurred = True
+                                    if oom_occurred:
+                                        batch_buffer.clear()
+                                        _clear_cuda_cache()
+                                        next_batch = max(1, min(effective_pose_batch, len(items_chunk)) // 2)
+                                        print(
+                                            f"{phase_label}: CUDAメモリ不足（OOM）が発生したため、バッチサイズを {next_batch} に下げて続行します。",
+                                            flush=True,
+                                        )
+                                        effective_pose_batch = next_batch
+                                        out = []
+                                        for start in range(0, len(items_chunk), next_batch):
+                                            out.extend(_run_pose_chunk(items_chunk[start : start + next_batch]))
+                                        return out
+                                return [
+                                    estimator.infer_single(frm, box, return_crop=True)
+                                    for frm, box in items_chunk
+                                ]
+
+                            inferred = _run_pose_chunk(batch_items)
+                        else:
+                            inferred = [
+                                estimator.infer_single(frm, box, return_crop=True)
+                                for frm, box in batch_items
+                            ]
+                        for pos, pose_with_crop in zip(valid_positions, inferred):
+                            pose_results[pos] = pose_with_crop
+
+                    for (idx, frame, target_box), (
+                        (restored_keypoints, pose_scores),
+                        crop_info,
+                    ) in zip(buffered, pose_results):
+                        _emit_pose_frame(
+                            idx,
+                            frame,
+                            target_box,
+                            restored_keypoints,
+                            pose_scores,
+                            crop_info,
+                        )
+            except BaseException:
+                aborted = True
+                raise
             finally:
                 try:
-                    writer_worker.close(drain=not aborted)
+                    reader.close()
                 finally:
                     try:
-                        crop_writer_worker.close(drain=not aborted)
+                        writer_worker.close(drain=not aborted)
                     finally:
                         try:
-                            crop_skeleton_writer_worker.close(drain=not aborted)
+                            crop_writer_worker.close(drain=not aborted)
                         finally:
-                            capture.release()
-                            writer.release()
-                            crop_writer.release()
-                            crop_skeleton_writer.release()
+                            try:
+                                crop_skeleton_writer_worker.close(drain=not aborted)
+                            finally:
+                                capture.release()
+                                writer.release()
+                                crop_writer.release()
+                                crop_skeleton_writer.release()
 
-    rtmlib_elapsed_seconds = rtmlib_initialization_seconds + perf_counter() - rtmlib_started_at
-    print("PROGRESS:100:RTMLIB", flush=True)
+        pose_elapsed_seconds = pose_init_seconds + perf_counter() - pose_started_at
+        print(f"PROGRESS:100:{phase_code}", flush=True)
+    finally:
+        estimator.close()
 
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
@@ -2195,13 +2211,13 @@ def run_analysis() -> None:
     print(f"CSV: {output_csv.resolve()}")
     print(f"Metadata: {output_metadata.resolve()}")
     print(f"Target boxes: {target_box_count}/{frame_count}")
-    print(f"rtmlib calls: {pose_call_count}, accepted: {pose_success_count}")
+    print(f"{phase_label} calls: {pose_call_count}, accepted: {pose_success_count}")
     yolo_analysis_fps = len(target_boxes) / yolo_elapsed_seconds if yolo_elapsed_seconds > 0 else 0.0
-    rtmlib_analysis_fps = frame_count / rtmlib_elapsed_seconds if rtmlib_elapsed_seconds > 0 else 0.0
+    pose_analysis_fps = frame_count / pose_elapsed_seconds if pose_elapsed_seconds > 0 else 0.0
     print(f"YOLO分析時間: {yolo_elapsed_seconds:.2f} 秒", flush=True)
     print(f"YOLO分析速度: {yolo_analysis_fps:.2f} フレーム/秒", flush=True)
-    print(f"RTMLIB分析時間: {rtmlib_elapsed_seconds:.2f} 秒", flush=True)
-    print(f"RTMLIB分析速度: {rtmlib_analysis_fps:.2f} フレーム/秒", flush=True)
+    print(f"{phase_label}分析時間: {pose_elapsed_seconds:.2f} 秒", flush=True)
+    print(f"{phase_label}分析速度: {pose_analysis_fps:.2f} フレーム/秒", flush=True)
 
 
 def run_analysis_worker(config_path: Path) -> None:
@@ -2214,12 +2230,6 @@ def run_analysis_worker(config_path: Path) -> None:
     os.environ.setdefault("YOLO_VERBOSE", "False")
     warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
 
-    globals()["cv2"] = importlib.import_module("cv2")
-    rtmlib = importlib.import_module("rtmlib")
-    globals()["RTMPose"] = rtmlib.RTMPose
-    globals()["draw_skeleton"] = rtmlib.draw_skeleton
-    globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
-
     settings = normalize_legacy_rtmlib_settings(
         json.loads(config_path.read_text(encoding="utf-8"))
     )
@@ -2230,6 +2240,20 @@ def run_analysis_worker(config_path: Path) -> None:
         if key in PATH_SETTING_KEYS:
             value = Path(value).expanduser()
         globals()[key] = value
+
+    globals()["cv2"] = importlib.import_module("cv2")
+    globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
+    if normalize_pose_engine(globals().get("POSE_ENGINE")) == "rtmpose":
+        rtmlib = importlib.import_module("rtmlib")
+        globals()["RTMPose"] = rtmlib.RTMPose
+        globals()["draw_skeleton"] = rtmlib.draw_skeleton
+    else:
+        try:
+            rtmlib = importlib.import_module("rtmlib")
+            globals()["draw_skeleton"] = rtmlib.draw_skeleton
+        except ImportError:
+            pass
+
     run_analysis()
 
 

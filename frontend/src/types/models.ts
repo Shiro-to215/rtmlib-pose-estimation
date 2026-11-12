@@ -1,10 +1,16 @@
 export type JobState = 'pending' | 'running' | 'done' | 'failed';
 
-export type PhaseCode = 'IDLE' | 'STARTING' | 'YOLO' | 'RTMPose' | 'RTMLIB' | 'STOPPING' | 'DONE';
+export type PhaseCode = 'IDLE' | 'STARTING' | 'YOLO' | 'RTMPose' | 'RTMLIB' | 'VITPOSE' | 'STOPPING' | 'DONE';
+
+export type PoseEngineType = 'rtmpose' | 'vitpose';
 
 export interface JobSummary {
+  pose_engine?: PoseEngineType;
   pose_model: string;
   pose_input_size: string;
+  vitpose_model?: string;
+  vitpose_input_size?: string;
+  vitpose_flip_test?: boolean;
   yolo_model: string;
   device: string;
   track_id: number | null;
@@ -27,9 +33,14 @@ export interface JobSettings {
   YOLO_BATCH_SIZE?: number;
   YOLO_TRACK_ID: number | null;
   CSV_MAX_PERSONS: number;
+  POSE_ENGINE?: PoseEngineType;
   RTMLIB_POSE_MODEL: string;
   RTMLIB_POSE_INPUT_SIZE: string;
   RTMPOSE_BATCH_SIZE?: number;
+  VITPOSE_MODEL?: string;
+  VITPOSE_INPUT_SIZE?: string;
+  VITPOSE_BATCH_SIZE?: number;
+  VITPOSE_FLIP_TEST?: boolean;
   // Overlay settings
   DRAW_SKELETON?: boolean;
   DRAW_BBOX?: boolean;

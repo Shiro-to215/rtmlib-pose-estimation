@@ -384,7 +384,11 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
           <div className="text-xs text-[#1E293B]">
             <div className="font-bold text-[#0B534D] mb-0.5">適用される初期設定:</div>
             <div className="font-mono text-[#475569]">
-              姿勢推定=RTMPose-{defaultSettings.RTMLIB_POSE_MODEL || 'x'} ({defaultSettings.RTMLIB_POSE_INPUT_SIZE || '384x288'}) / YOLO=
+              姿勢推定=
+              {(defaultSettings.POSE_ENGINE || 'rtmpose') === 'vitpose'
+                ? `ViTPose++-${String(defaultSettings.VITPOSE_MODEL || 'h').toUpperCase()} (${defaultSettings.VITPOSE_INPUT_SIZE || '256x192'})`
+                : `RTMPose-${defaultSettings.RTMLIB_POSE_MODEL || 'x'} (${defaultSettings.RTMLIB_POSE_INPUT_SIZE || '384x288'})`}{' '}
+              / YOLO=
               {(defaultSettings.YOLO_MODEL || 'yolo11m.pt').replace(/^yolo11|\.pt$/g, '')} / デバイス=
               {defaultSettings.DEVICE || 'auto'}
             </div>

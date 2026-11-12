@@ -37,6 +37,11 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
   }
 
   const yoloShort = (job.summary.yolo_model || 'yolo11m.pt').replace(/^yolo11|\.pt$/g, '');
+  const poseEngine = job.summary.pose_engine || job.settings?.POSE_ENGINE || 'rtmpose';
+  const poseSpecLabel =
+    poseEngine === 'vitpose'
+      ? `ViTPose++-${(job.summary.vitpose_model || job.settings?.VITPOSE_MODEL || 'h').toUpperCase()} (${job.summary.vitpose_input_size || '256x192'})`
+      : `RTMPose-${job.summary.pose_model || 'x'} (${job.summary.pose_input_size || '384x288'})`;
 
   return (
     <div
@@ -99,7 +104,7 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
             {job.video_name}
           </span>
           <span className="text-[11px] text-[#64748B] whitespace-nowrap bg-slate-100/80 px-2 py-0.5 rounded">
-            RTMPose-{job.summary.pose_model || 'x'} ({job.summary.pose_input_size || '384x288'}) / YOLO-{yoloShort} / {job.summary.device}
+            {poseSpecLabel} / YOLO-{yoloShort} / {job.summary.device}
           </span>
         </div>
 

@@ -438,14 +438,7 @@ class AnalysisWorkerManager:
                 "thumbnail": "",
                 "thumbnail_info": "",
                 "settings": settings,
-                "summary": {
-                    "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
-                    "pose_input_size": settings.get("RTMLIB_POSE_INPUT_SIZE", "384x288"),
-                    "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
-                    "device": settings.get("DEVICE", "auto"),
-                    "track_id": settings.get("YOLO_TRACK_ID"),
-                    "csv_max_persons": settings.get("CSV_MAX_PERSONS", 3),
-                },
+                "summary": gui.build_job_summary(settings),
             })
 
         payload = {
