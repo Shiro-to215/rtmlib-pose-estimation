@@ -192,6 +192,17 @@ def normalize_crop_bgr_to_chw(crop_bgr: np.ndarray) -> np.ndarray:
     return np.transpose(rgb, (2, 0, 1))
 
 
+def preimport_vitpose_dependencies() -> None:
+    """Pre-import Hugging Face transformers ViTPose class into RAM (no weights or CUDA)."""
+    try:
+        import transformers
+
+        transformers.utils.logging.disable_progress_bar()
+        from transformers import VitPoseForPoseEstimation  # noqa: F401
+    except Exception:
+        pass
+
+
 class ViTPoseEstimator(BasePoseEstimator):
     """High-accuracy PyTorch ViTPose++ estimator with UDP affine/decode, FP16 AMP, and Flip Test TTA."""
 
@@ -215,19 +226,34 @@ class ViTPoseEstimator(BasePoseEstimator):
 
     def _load_model(self) -> Any:
         import torch
+        import transformers
+
+        transformers.utils.logging.disable_progress_bar()
         from transformers import VitPoseForPoseEstimation
 
         dtype = torch.float16 if self._use_fp16 else torch.float32
         repo_id = self._asset["repo_id"]
-        print(
-            f"ViTPose++ モデル読み込み: {repo_id} "
-            f"(精度: {'FP16' if self._use_fp16 else 'FP32'}, FlipTest: {'ON' if self._flip_test else 'OFF'})",
-            flush=True,
-        )
+
+        def _from_pretrained(*, local_files_only: bool) -> Any:
+            try:
+                return VitPoseForPoseEstimation.from_pretrained(
+                    repo_id,
+                    dtype=dtype,
+                    local_files_only=local_files_only,
+                )
+            except TypeError:
+                return VitPoseForPoseEstimation.from_pretrained(
+                    repo_id,
+                    torch_dtype=dtype,
+                    local_files_only=local_files_only,
+                )
+
         try:
-            model = VitPoseForPoseEstimation.from_pretrained(repo_id, dtype=dtype)
-        except TypeError:
-            model = VitPoseForPoseEstimation.from_pretrained(repo_id, torch_dtype=dtype)
+            model = _from_pretrained(local_files_only=True)
+        except OSError:
+            # First-time download or incomplete local cache: fall back to Hugging Face Hub.
+            print(f"初回モデルダウンロード中: {repo_id}", flush=True)
+            model = _from_pretrained(local_files_only=False)
         model.to(self._device)
         model.eval()
         return model

@@ -1821,6 +1821,16 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
 
     queue_depth = max(8, min(48, effective_batch + 8))
     reader = AsyncFrameReader(capture, max_queue_size=queue_depth)
+    preimport_thread = None
+    if normalize_pose_engine(globals().get("POSE_ENGINE")) == "vitpose":
+        from pose_estimators.vitpose import preimport_vitpose_dependencies
+
+        preimport_thread = threading.Thread(
+            target=preimport_vitpose_dependencies,
+            daemon=True,
+            name="ViTPosePreimport",
+        )
+        preimport_thread.start()
     try:
         while True:
             batch_frames = reader.read_batch(effective_batch)
@@ -1831,6 +1841,8 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
         try:
             reader.close()
         finally:
+            if preimport_thread is not None:
+                preimport_thread.join()
             capture.release()
             del detector
             _clear_cuda_cache()
