@@ -114,7 +114,7 @@ class AddReservationView(ctk.CTkFrame):
         self.out_card = self._make_section(
             self.scroll,
             title="2. 出力先フォルダーの設定",
-            subtitle="解析結果（骨格動画・YOLO動画・CSV・メタデータ）の保存先を指定します。",
+            subtitle="解析結果（骨格動画・crop動画2本・CSV・メタデータ）の保存先を指定します。",
         )
         self.out_card.grid(row=1, column=0, sticky="ew", pady=(0, 12), padx=(0, 8))
 

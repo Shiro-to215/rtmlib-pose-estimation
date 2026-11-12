@@ -17,7 +17,8 @@ export interface JobSettings {
   OUTPUT_ROOT: string;
   OUTPUT_FOLDER_NAME: string;
   OUTPUT_VIDEO_NAME?: string;
-  OUTPUT_YOLO_VIDEO_NAME?: string;
+  OUTPUT_CROP_VIDEO_NAME?: string;
+  OUTPUT_CROP_SKELETON_VIDEO_NAME?: string;
   OUTPUT_CSV_NAME?: string;
   OUTPUT_METADATA_NAME?: string;
   DEVICE: string;

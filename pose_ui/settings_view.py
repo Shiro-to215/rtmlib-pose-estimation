@@ -164,7 +164,8 @@ class SettingsView(ctk.CTkFrame):
             "OUTPUT_ROOT",
             "OUTPUT_FOLDER_NAME",
             "OUTPUT_VIDEO_NAME",
-            "OUTPUT_YOLO_VIDEO_NAME",
+            "OUTPUT_CROP_VIDEO_NAME",
+            "OUTPUT_CROP_SKELETON_VIDEO_NAME",
             "OUTPUT_CSV_NAME",
             "OUTPUT_METADATA_NAME",
         }

@@ -250,7 +250,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
         <section className="bg-white rounded-lg border border-[#D4DFDC] p-4 shadow-xs">
           <h3 className="text-sm font-bold text-[#1E293B]">2. 出力先フォルダーの設定</h3>
           <p className="text-xs text-[#64748B] mt-0.5">
-            解析結果（骨格動画・YOLO動画・CSV・メタデータ）の保存先を指定します。
+            解析結果（骨格動画・crop動画2本・CSV・メタデータ）の保存先を指定します。
           </p>
 
           <div className="mt-3">
@@ -289,7 +289,8 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
                   </span>
                   <div className="font-mono text-[11px] space-y-0.5">
                     <div>・ 骨格動画: {previewNames.OUTPUT_VIDEO_NAME || '自動生成'}</div>
-                    <div>・ YOLO動画: {previewNames.OUTPUT_YOLO_VIDEO_NAME || '自動生成'}</div>
+                    <div>・ 骨格なしcrop動画: {previewNames.OUTPUT_CROP_VIDEO_NAME || '自動生成'}</div>
+                    <div>・ 骨格ありcrop動画: {previewNames.OUTPUT_CROP_SKELETON_VIDEO_NAME || '自動生成'}</div>
                     <div>・ CSVデータ: {previewNames.OUTPUT_CSV_NAME || '自動生成'}</div>
                     <div>・ メタデータ: {previewNames.OUTPUT_METADATA_NAME || '自動生成'}</div>
                   </div>

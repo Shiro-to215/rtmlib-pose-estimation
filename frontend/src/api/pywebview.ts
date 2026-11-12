@@ -355,7 +355,8 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_ROOT: 'C:\\Output',
         OUTPUT_FOLDER_NAME: 'sample_dance_01',
         OUTPUT_VIDEO_NAME: 'sample_dance_01.mp4',
-        OUTPUT_YOLO_VIDEO_NAME: 'sample_dance_01-yolo.mp4',
+        OUTPUT_CROP_VIDEO_NAME: 'sample_dance_01-crop.mp4',
+        OUTPUT_CROP_SKELETON_VIDEO_NAME: 'sample_dance_01-crop-skeleton.mp4',
         OUTPUT_CSV_NAME: 'sample_dance_01.csv',
         OUTPUT_METADATA_NAME: 'sample_dance_01_metadata.txt',
         DEVICE: 'auto',
@@ -429,7 +430,8 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_ROOT: 'C:\\Output',
         OUTPUT_FOLDER_NAME: 'sample_sprint',
         OUTPUT_VIDEO_NAME: 'sample_sprint.mp4',
-        OUTPUT_YOLO_VIDEO_NAME: 'sample_sprint-yolo.mp4',
+        OUTPUT_CROP_VIDEO_NAME: 'sample_sprint-crop.mp4',
+        OUTPUT_CROP_SKELETON_VIDEO_NAME: 'sample_sprint-crop-skeleton.mp4',
         OUTPUT_CSV_NAME: 'sample_sprint.csv',
         OUTPUT_METADATA_NAME: 'sample_sprint_metadata.txt',
         DEVICE: 'auto',
@@ -463,7 +465,8 @@ class BrowserMockBackend implements BackendApi {
       'THUMBNAIL_IMAGE_NAME',
       'OUTPUT_FOLDER_NAME',
       'OUTPUT_VIDEO_NAME',
-      'OUTPUT_YOLO_VIDEO_NAME',
+      'OUTPUT_CROP_VIDEO_NAME',
+      'OUTPUT_CROP_SKELETON_VIDEO_NAME',
       'OUTPUT_CSV_NAME',
       'OUTPUT_METADATA_NAME',
     ]);
@@ -723,7 +726,8 @@ class BrowserMockBackend implements BackendApi {
     const base = folderPath.split('\\').pop() || folderPath.split('/').pop() || 'output';
     return {
       OUTPUT_VIDEO_NAME: `${base}.mp4`,
-      OUTPUT_YOLO_VIDEO_NAME: `${base}-yolo.mp4`,
+      OUTPUT_CROP_VIDEO_NAME: `${base}-crop.mp4`,
+      OUTPUT_CROP_SKELETON_VIDEO_NAME: `${base}-crop-skeleton.mp4`,
       OUTPUT_CSV_NAME: `${base}.csv`,
       OUTPUT_METADATA_NAME: `${base}_metadata.txt`,
     };

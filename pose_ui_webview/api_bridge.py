@@ -34,7 +34,8 @@ JOB_SCOPED_SETTING_KEYS: frozenset[str] = frozenset({
     "THUMBNAIL_IMAGE_NAME",
     "OUTPUT_FOLDER_NAME",
     "OUTPUT_VIDEO_NAME",
-    "OUTPUT_YOLO_VIDEO_NAME",
+    "OUTPUT_CROP_VIDEO_NAME",
+    "OUTPUT_CROP_SKELETON_VIDEO_NAME",
     "OUTPUT_CSV_NAME",
     "OUTPUT_METADATA_NAME",
 })
@@ -47,7 +48,8 @@ IMMUTABLE_JOB_SETTING_KEYS: frozenset[str] = frozenset({
     "OUTPUT_ROOT",
     "OUTPUT_FOLDER_NAME",
     "OUTPUT_VIDEO_NAME",
-    "OUTPUT_YOLO_VIDEO_NAME",
+    "OUTPUT_CROP_VIDEO_NAME",
+    "OUTPUT_CROP_SKELETON_VIDEO_NAME",
     "OUTPUT_CSV_NAME",
     "OUTPUT_METADATA_NAME",
 })
@@ -602,7 +604,7 @@ class BackendApi:
             return {"valid": False, "error": str(err)}
 
     def get_output_preview_names(self, folder_path: str) -> dict[str, str]:
-        """Returns the 4 standard output filenames for destination folder preview."""
+        """Returns the 5 standard output filenames for destination folder preview."""
         if not folder_path or not isinstance(folder_path, (str, Path)):
             return {}
         p = Path(folder_path)
@@ -612,7 +614,8 @@ class BackendApi:
             if self._output_names_fn is None:
                 return {
                     "OUTPUT_VIDEO_NAME": f"{p.name}.mp4",
-                    "OUTPUT_YOLO_VIDEO_NAME": f"{p.name}-yolo.mp4",
+                    "OUTPUT_CROP_VIDEO_NAME": f"{p.name}-crop.mp4",
+                    "OUTPUT_CROP_SKELETON_VIDEO_NAME": f"{p.name}-crop-skeleton.mp4",
                     "OUTPUT_CSV_NAME": f"{p.name}.csv",
                     "OUTPUT_METADATA_NAME": f"{p.name}_metadata.txt",
                 }
