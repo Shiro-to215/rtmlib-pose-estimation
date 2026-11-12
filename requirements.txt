@@ -4,5 +4,6 @@ onnxruntime>=1.16
 ultralytics>=8.3
 lap>=0.5.12
 Pillow>=10.0
+pywebview>=6.0
 customtkinter>=5.2
 tkinterdnd2>=0.4
