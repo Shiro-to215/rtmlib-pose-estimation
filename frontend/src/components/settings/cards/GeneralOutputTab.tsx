@@ -21,7 +21,14 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
   rtmlibWarning,
 }) => {
   const deviceOptions = choices.DEVICE || ['auto', 'cpu', 'cuda'];
-  const yoloModelOptions = choices.YOLO_MODEL || ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'];
+  const toYoloFile = (opt: string) =>
+    opt.startsWith('yolo11') && opt.endsWith('.pt') ? opt : `yolo11${opt}.pt`;
+  const toYoloShort = (opt: string) => opt.replace(/^yolo11|\.pt$/g, '');
+  const yoloModelOptions = (choices.YOLO_MODEL || ['n', 's', 'm', 'l', 'x']).map((opt) => ({
+    value: toYoloFile(opt),
+    label: toYoloShort(opt),
+  }));
+  const currentYoloModel = toYoloFile(values.YOLO_MODEL || 'yolo11m.pt');
   const backendOptions = choices.BACKEND || ['onnxruntime', 'opencv'];
   const poseModelChoices = choices.RTMLIB_POSE_MODEL || ['t', 's', 'm', 'l', 'x'];
   const poseInputChoices = choices.RTMLIB_POSE_INPUT_SIZE || ['256x192', '384x288'];
@@ -79,7 +86,7 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           <DropdownSelect
             label="YOLOモデル"
             description="人物検出を行うYOLO11モデルのサイズ（n:最速 ～ x:最高精度）"
-            value={values.YOLO_MODEL || 'yolo11m.pt'}
+            value={currentYoloModel}
             options={yoloModelOptions}
             onChange={(v) => setFieldValue('YOLO_MODEL', v)}
           />
