@@ -18,3 +18,5 @@ tools/
 # Frontend dependencies (dist/ is tracked so end users do not need Node.js)
 frontend/node_modules/
 
+.agents
+TEST_READY.md
