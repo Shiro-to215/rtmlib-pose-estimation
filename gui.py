@@ -53,6 +53,7 @@ YOLO_IMAGE_SIZE = 1280
 YOLO_CONFIDENCE = 0.20
 YOLO_IOU = 0.50
 YOLO_CLASSES = [0]  # COCOのperson
+YOLO_BATCH_SIZE = 1
 
 # 対象選択。指定した場合だけ、そのYOLO追跡IDを対象にします。
 # Noneの場合は、動画全体の移動量から対象IDを自動選択します。
@@ -78,6 +79,7 @@ MODEL_MODE = "performance"
 RTMLIB_POSE_MODEL = "mode"
 RTMLIB_POSE_INPUT_SIZE = "mode"
 RTMLIB_PERSON_DETECTOR = "mode"
+RTMPOSE_BATCH_SIZE = 1
 
 #各種設定
 KEYPOINT_THRESHOLD = 0.45
@@ -112,10 +114,10 @@ ENGINE_SETTING_NAMES = (
     "INPUT_ROOT", "INPUT_VIDEO_NAME", "THUMBNAIL_ROOT", "THUMBNAIL_IMAGE_NAME",
     "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME", "OUTPUT_VIDEO_NAME", "OUTPUT_YOLO_VIDEO_NAME",
     "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
-    "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_TRACK_ID",
+    "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID",
     "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
     "BACKEND", "DEVICE", "MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-    "RTMLIB_PERSON_DETECTOR", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
+    "RTMLIB_PERSON_DETECTOR", "RTMPOSE_BATCH_SIZE", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
     "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
@@ -144,12 +146,12 @@ DEFAULTS.update({
 GROUPS = [
     ("入力・出力", ["INPUT_VIDEO_FILE", "THUMBNAIL_FILE", "OUTPUT_DIRECTORY"]),
     ("YOLO・対象人物", ["YOLO_MODEL", "YOLO_TRACKER", "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE",
-                    "YOLO_IOU", "YOLO_CLASSES", "YOLO_TRACK_ID", "CROP_PADDING_RATIO",
+                    "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID", "CROP_PADDING_RATIO",
                     "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
                     "TARGET_BOX_FILL_MAX_FRAMES"]),
     ("姿勢推定・追跡", ["MODEL_MODE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
-                     "RTMLIB_PERSON_DETECTOR", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
+                     "RTMLIB_PERSON_DETECTOR", "RTMPOSE_BATCH_SIZE", "BACKEND", "DEVICE", "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
                      "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
                      "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
                      "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
@@ -169,10 +171,12 @@ LABELS = {
     "THUMBNAIL_FILE": "撮影日時用サムネイル（任意）",
     "OUTPUT_DIRECTORY": "出力先フォルダ",
     "YOLO_MODEL": "YOLOモデルサイズ",
+    "YOLO_BATCH_SIZE": "YOLOバッチサイズ",
     "MODEL_MODE": "姿勢推定モデル",
     "RTMLIB_POSE_MODEL": "RTMPoseモデル（mode=既存モード）",
     "RTMLIB_POSE_INPUT_SIZE": "RTMPose入力解像度（mode=モードに合わせる）",
-    "RTMLIB_PERSON_DETECTOR": "RTMLib人物検出器 YOLOX（mode=既存モード）",
+    "RTMLIB_PERSON_DETECTOR": "RTMLib人物検出器 YOLOX（現在未使用）",
+    "RTMPOSE_BATCH_SIZE": "RTMPoseバッチサイズ",
     "DEVICE": "実行デバイス（YOLO・姿勢推定）",
 }
 CHOICES = {
@@ -547,71 +551,204 @@ def pose_match_cost(
     )
 
 
-def pose_from_crop(body, frame, target_box, previous_keypoints=None, previous_scores=None):
+MAX_BATCH_SIZE = 64
+
+
+def clamp_batch_size(value, minimum: int = 1, maximum: int = MAX_BATCH_SIZE) -> int:
+    """Coerce a batch size setting to an integer within [minimum, maximum]."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return minimum
+    return max(minimum, min(maximum, parsed))
+
+
+def resolve_effective_batch_size(requested, device: str, stage_name: str) -> int:
+    """Resolve effective batch size, forcing 1 when running on CPU."""
+    batch_size = clamp_batch_size(requested)
+    if not str(device or "").lower().startswith("cuda"):
+        if batch_size > 1:
+            print(
+                f"{stage_name}: CPU実行のためバッチサイズを 1 に固定します（設定値: {batch_size}）",
+                flush=True,
+            )
+        return 1
+    return batch_size
+
+
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    """Return True if an exception indicates a CUDA / GPU memory allocation failure."""
+    if type(exc).__name__ == "OutOfMemoryError":
+        return True
+    message = str(exc).lower()
+    oom_markers = (
+        "out of memory",
+        "cudaerrormemoryallocation",
+        "bfcarena",
+        "failed to allocate memory",
+        "cublas_status_alloc_failed",
+        "cudnn_status_alloc_failed",
+    )
+    return any(marker in message for marker in oom_markers)
+
+
+def _clear_cuda_cache() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def supports_dynamic_batch(pose_model) -> tuple[bool, object]:
+    """Check whether the loaded pose model ONNX session supports a dynamic batch axis."""
+    session = getattr(pose_model, "session", None)
+    if session is None:
+        return False, "no-onnx-session"
+    try:
+        inputs = session.get_inputs()
+    except Exception:
+        return False, "unknown"
+    if not inputs or not getattr(inputs[0], "shape", None):
+        return False, "unknown"
+    batch_dim = inputs[0].shape[0]
+    if isinstance(batch_dim, int) and batch_dim > 0:
+        return False, batch_dim
+    return True, batch_dim
+
+
+def _to_chw_float32(preprocessed_img):
+    """Normalize rtmlib RTMPose.preprocess image output to contiguous (3, H, W) float32."""
+    import numpy as np
+
+    arr = np.asarray(preprocessed_img, dtype=np.float32)
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        arr = np.transpose(arr, (2, 0, 1))
+    elif arr.ndim != 3 or arr.shape[0] != 3:
+        raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
+    return np.ascontiguousarray(arr, dtype=np.float32)
+
+
+def _extract_single_pose(keypoints, scores):
+    """Extract 1-person (keypoints, scores) arrays from rtmlib RTMPose output."""
+    import numpy as np
+
+    if keypoints is None or scores is None or len(keypoints) == 0:
+        return None, None
+    kpts_arr = np.asarray(keypoints, dtype=np.float32)
+    scores_arr = np.asarray(scores, dtype=np.float32)
+    if kpts_arr.ndim == 3:
+        kpts_arr = kpts_arr[0]
+    if scores_arr.ndim == 2:
+        scores_arr = scores_arr[0]
+    if len(kpts_arr) == 0:
+        return None, None
+    return [(float(pt[0]), float(pt[1])) for pt in kpts_arr], scores_arr
+
+
+def _clamped_target_box(target_box, width: int, height: int):
+    if target_box is None:
+        return None
+    clamped = clamp_box(target_box, width, height)
+    if clamped[2] <= clamped[0] or clamped[3] <= clamped[1]:
+        return None
+    return [float(clamped[0]), float(clamped[1]), float(clamped[2]), float(clamped[3])]
+
+
+def infer_pose_single(pose_model, frame, target_box):
+    """Run RTMPose directly on target_box for a single frame."""
+    height, width = frame.shape[:2]
+    clamped = _clamped_target_box(target_box, width, height)
+    if clamped is None:
+        return None, None
+    keypoints, scores = pose_model(frame, bboxes=[clamped])
+    return _extract_single_pose(keypoints, scores)
+
+
+def infer_pose_batch(pose_model, batch_items):
+    """Run batched RTMPose inference via ONNX Runtime for [(frame, target_box), ...]."""
+    import numpy as np
+
+    if not batch_items:
+        return []
+    if len(batch_items) == 1:
+        frame, target_box = batch_items[0]
+        return [infer_pose_single(pose_model, frame, target_box)]
+
+    prepared = []
+    chw_tensors = []
+    for frame, target_box in batch_items:
+        height, width = frame.shape[:2]
+        clamped = _clamped_target_box(target_box, width, height)
+        if clamped is None:
+            prepared.append(None)
+            continue
+        preprocessed, center, scale = pose_model.preprocess(frame, clamped)
+        chw_tensors.append(_to_chw_float32(preprocessed))
+        prepared.append((center, scale))
+
+    if not chw_tensors:
+        return [(None, None) for _ in batch_items]
+
+    batch_tensor = np.stack(chw_tensors, axis=0)
+    session = pose_model.session
+    input_name = session.get_inputs()[0].name
+    output_names = [out.name for out in session.get_outputs()]
+    raw_outputs = session.run(output_names, {input_name: batch_tensor})
+
+    results = []
+    tensor_idx = 0
+    for meta in prepared:
+        if meta is None:
+            results.append((None, None))
+            continue
+        center, scale = meta
+        item_outputs = [out[tensor_idx : tensor_idx + 1] for out in raw_outputs]
+        tensor_idx += 1
+        kpts, scs = pose_model.postprocess(item_outputs, center, scale)
+        results.append(_extract_single_pose(kpts, scs))
+    return results
+
+
+def annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores) -> None:
+    """Draw skeleton on the padded crop region of frame in-place."""
+    import numpy as np
+
+    if restored_keypoints is None or pose_scores is None or target_box is None:
+        return
     height, width = frame.shape[:2]
     crop_left, crop_top, crop_right, crop_bottom = padded_crop_box(
         target_box, width, height
     )
     crop = frame[crop_top:crop_bottom, crop_left:crop_right]
     if crop.size == 0:
-        return None, None, None
-    keypoints, scores = body(crop)
-    if len(keypoints) == 0:
-        return None, None, (crop_left, crop_top, crop_right, crop_bottom)
-    local_target_box = (
-        float(target_box[0]) - crop_left,
-        float(target_box[1]) - crop_top,
-        float(target_box[2]) - crop_left,
-        float(target_box[3]) - crop_top,
+        return
+    local_kpts = np.asarray(
+        [[(float(x) - crop_left, float(y) - crop_top) for x, y in restored_keypoints]],
+        dtype=np.float32,
     )
-    local_target_center = box_center(local_target_box)
-    target_scale = max(
-        math.hypot(
-            local_target_box[2] - local_target_box[0],
-            local_target_box[3] - local_target_box[1],
-        ),
-        1.0,
-    )
-    local_previous_keypoints = None
-    if previous_keypoints is not None:
-        local_previous_keypoints = [
-            (float(point[0]) - crop_left, float(point[1]) - crop_top)
-            for point in previous_keypoints
-        ]
-    candidate_costs = []
-    for candidate_keypoints, candidate_scores in zip(keypoints, scores):
-        geometry = get_person_geometry(candidate_keypoints, candidate_scores)
-        iou_cost = 1.0 - bbox_iou(local_target_box, geometry["bbox"])
-        center_cost = math.dist(geometry["center"], local_target_center) / target_scale
-        temporal_cost = 0.0
-        if local_previous_keypoints is not None and previous_scores is not None:
-            temporal_cost = pose_match_cost(
-                candidate_keypoints,
-                candidate_scores,
-                local_target_center,
-                local_previous_keypoints,
-                previous_scores,
-            )
-        candidate_costs.append(
-            POSE_BOX_IOU_WEIGHT * iou_cost
-            + POSE_BOX_CENTER_WEIGHT * center_cost
-            + POSE_TEMPORAL_WEIGHT * temporal_cost
-        )
-    pose_index = min(range(len(candidate_costs)), key=candidate_costs.__getitem__)
-    local_keypoints = keypoints[pose_index]
-    local_scores = scores[pose_index]
-    restored_keypoints = [
-        (float(point[0]) + crop_left, float(point[1]) + crop_top)
-        for point in local_keypoints
-    ]
+    local_scores = np.asarray([pose_scores], dtype=np.float32)
     annotated_crop = draw_skeleton(
         crop.copy(),
-        keypoints[pose_index:pose_index + 1],
-        scores[pose_index:pose_index + 1],
+        local_kpts,
+        local_scores,
         kpt_thr=KEYPOINT_THRESHOLD,
     )
     frame[crop_top:crop_bottom, crop_left:crop_right] = annotated_crop
-    return restored_keypoints, local_scores, (crop_left, crop_top, crop_right, crop_bottom)
+
+
+def pose_from_crop(pose_model, frame, target_box, previous_keypoints=None, previous_scores=None):
+    """Run RTMPose directly on YOLO target_box and draw skeleton onto frame."""
+    restored_keypoints, pose_scores = infer_pose_single(pose_model, frame, target_box)
+    if restored_keypoints is None:
+        return None, None, None
+    annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
+    height, width = frame.shape[:2]
+    return restored_keypoints, pose_scores, padded_crop_box(target_box, width, height)
 
 
 def get_person_geometry(person_keypoints, person_scores) -> dict:
@@ -1101,40 +1238,25 @@ def create_pose_model(device: str):
         RTMLIB_PERSON_DETECTOR,
     )
     pose_asset = selection["pose_asset"]
-    detector_asset = selection["detector_asset"]
     print(
         f"RTMLIB姿勢モデル: RTMPose-{selection['pose_model'].upper()} "
-        f"({selection['pose_resolution']})",
+        f"({selection['pose_resolution']}) [YOLOXスキップ・YOLO11枠直接入力]",
         flush=True,
     )
-    detector_size = detector_asset["input_size"]
-    print(
-        f"RTMLIB人物検出器: YOLOX-{selection['person_detector'].upper()} "
-        f"({detector_size[1]}x{detector_size[0]}), "
-        f"score_thr={RTMLIB_DETECTOR_SCORE_THRESHOLD:.2f}, "
-        f"nms_thr={RTMLIB_DETECTOR_NMS_THRESHOLD:.2f}",
-        flush=True,
-    )
-    model = Body(
-        det=detector_asset["url"],
-        det_input_size=detector_asset["input_size"],
-        pose=pose_asset["url"],
-        pose_input_size=pose_asset["input_size"],
-        mode=MODEL_MODE,
+    model = RTMPose(
+        onnx_model=pose_asset["url"],
+        model_input_size=pose_asset["input_size"],
         backend=BACKEND,
         device=device,
     )
-    model.det_model.score_thr = RTMLIB_DETECTOR_SCORE_THRESHOLD
-    model.det_model.nms_thr = RTMLIB_DETECTOR_NMS_THRESHOLD
     if BACKEND == "onnxruntime":
-        for name in ("det_model", "pose_model"):
-            providers = getattr(model, name).session.get_providers()
-            print(f"RTMLIB {name}: {', '.join(providers)}", flush=True)
-            if device.startswith("cuda") and "CUDAExecutionProvider" not in providers:
-                raise RuntimeError(
-                    f"RTMLIB {name} のCUDA初期化に失敗しました。"
-                    "CUDA/cuDNNのバージョンを確認するか、DEVICE=cpu を選択してください。"
-                )
+        providers = model.session.get_providers()
+        print(f"RTMLIB pose_model: {', '.join(providers)}", flush=True)
+        if device.startswith("cuda") and "CUDAExecutionProvider" not in providers:
+            raise RuntimeError(
+                "RTMLIB pose_model のCUDA初期化に失敗しました。"
+                "CUDA/cuDNNのバージョンを確認するか、DEVICE=cpu を選択してください。"
+            )
     return model
 
 
@@ -1203,6 +1325,8 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
         )
 
     detector = YOLO(YOLO_MODEL)
+    effective_batch = resolve_effective_batch_size(YOLO_BATCH_SIZE, device, "YOLO")
+    print(f"YOLOバッチサイズ: {effective_batch}", flush=True)
     tracks = {}
     next_id = 0
     target_stable_id = YOLO_TRACK_ID
@@ -1210,36 +1334,76 @@ def run_yolo_pass(input_video: Path, output_yolo_video: Path, progress_total_fra
     processed_frames = 0
     last_progress = -1
     print("PROGRESS:0:YOLO", flush=True)
+
+    def _track_single(single_frame):
+        return detector.track(
+            single_frame,
+            device=device,
+            persist=True,
+            tracker=YOLO_TRACKER,
+            imgsz=YOLO_IMAGE_SIZE,
+            conf=YOLO_CONFIDENCE,
+            iou=YOLO_IOU,
+            classes=YOLO_CLASSES,
+            max_det=30,
+            verbose=False,
+        )
+
     try:
-        while True:
-            success, frame = capture.read()
-            if not success:
+        eof = False
+        while not eof:
+            batch_frames = []
+            for _ in range(effective_batch):
+                success, frame = capture.read()
+                if not success:
+                    eof = True
+                    break
+                batch_frames.append(frame)
+            if not batch_frames:
                 break
-            results = detector.track(
-                frame,
-                device=device,
-                persist=True,
-                tracker=YOLO_TRACKER,
-                imgsz=YOLO_IMAGE_SIZE,
-                conf=YOLO_CONFIDENCE,
-                iou=YOLO_IOU,
-                classes=YOLO_CLASSES,
-                max_det=30,
-                verbose=False,
-            )
-            detections, next_id = stabilize_yolo_ids(
-                results[0].boxes,
-                tracks,
-                next_id,
-            )
-            frame_detections.append(detections)
-            writer.write(draw_stable_yolo_tracks(frame, detections))
-            processed_frames += 1
-            if total_frames > 0:
-                progress = min(49, int(processed_frames * 50 / total_frames))
-                if progress > last_progress:
-                    print(f"PROGRESS:{progress}:YOLO", flush=True)
-                    last_progress = progress
+
+            if effective_batch > 1 and len(batch_frames) > 1:
+                try:
+                    results = detector.track(
+                        batch_frames,
+                        device=device,
+                        persist=True,
+                        tracker=YOLO_TRACKER,
+                        imgsz=YOLO_IMAGE_SIZE,
+                        conf=YOLO_CONFIDENCE,
+                        iou=YOLO_IOU,
+                        classes=YOLO_CLASSES,
+                        max_det=30,
+                        batch=len(batch_frames),
+                        verbose=False,
+                    )
+                except Exception as exc:
+                    if not is_cuda_oom_error(exc):
+                        raise
+                    print(
+                        "YOLO: CUDAメモリ不足（OOM）が発生したため、バッチサイズを 1 にフォールバックして続行します。",
+                        flush=True,
+                    )
+                    _clear_cuda_cache()
+                    effective_batch = 1
+                    results = [_track_single(f)[0] for f in batch_frames]
+            else:
+                results = [_track_single(batch_frames[0])[0]]
+
+            for frame, result in zip(batch_frames, results):
+                detections, next_id = stabilize_yolo_ids(
+                    result.boxes,
+                    tracks,
+                    next_id,
+                )
+                frame_detections.append(detections)
+                writer.write(draw_stable_yolo_tracks(frame, detections))
+                processed_frames += 1
+                if total_frames > 0:
+                    progress = min(49, int(processed_frames * 50 / total_frames))
+                    if progress > last_progress:
+                        print(f"PROGRESS:{progress}:YOLO", flush=True)
+                        last_progress = progress
     finally:
         capture.release()
         writer.release()
@@ -1305,6 +1469,20 @@ def run_analysis() -> None:
         capture.release()
         raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
 
+    effective_rtmpose_batch = resolve_effective_batch_size(
+        RTMPOSE_BATCH_SIZE, pose_device, "RTMPose"
+    )
+    if effective_rtmpose_batch > 1:
+        is_dynamic, dim_info = supports_dynamic_batch(pose_model)
+        if not is_dynamic:
+            print(
+                f"RTMPose: ONNXモデルが静的バッチ（shape[0]={dim_info}）のため、"
+                f"バッチサイズを 1 にフォールバックします（設定値: {effective_rtmpose_batch}）",
+                flush=True,
+            )
+            effective_rtmpose_batch = 1
+    print(f"RTMPoseバッチサイズ: {effective_rtmpose_batch}", flush=True)
+
     with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
         csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
         csv_writer.writeheader()
@@ -1314,88 +1492,119 @@ def run_analysis() -> None:
             target_box_count = 0
             pose_call_count = 0
             pose_success_count = 0
-            previous_target_keypoints = None
-            previous_target_scores = None
             last_progress = 50
             total_pose_frames = len(target_boxes)
             print("PROGRESS:50:RTMLIB", flush=True)
             while frame_count < len(target_boxes):
-                success, frame = capture.read()
-                if not success:
+                buffered = []
+                read_limit = min(effective_rtmpose_batch, len(target_boxes) - frame_count)
+                for offset in range(read_limit):
+                    success, frame = capture.read()
+                    if not success:
+                        break
+                    idx = frame_count + offset
+                    buffered.append((idx, frame, target_boxes[idx]))
+                if not buffered:
                     break
-                target_box = target_boxes[frame_count]
-                restored_keypoints = None
-                pose_scores = None
-                if target_box is not None:
-                    target_box_count += 1
-                    pose_call_count += 1
-                    restored_keypoints, pose_scores, crop_box = pose_from_crop(
-                        pose_model,
-                        frame,
-                        target_box,
-                        previous_target_keypoints,
-                        previous_target_scores,
-                    )
+
+                valid_positions = [
+                    pos
+                    for pos, (_, frm, box) in enumerate(buffered)
+                    if _clamped_target_box(box, frm.shape[1], frm.shape[0]) is not None
+                ]
+                pose_results = [(None, None) for _ in buffered]
+                if valid_positions:
+                    pose_call_count += len(valid_positions)
+                    batch_items = [(buffered[pos][1], buffered[pos][2]) for pos in valid_positions]
+                    if effective_rtmpose_batch > 1 and len(batch_items) > 1:
+                        try:
+                            inferred = infer_pose_batch(pose_model, batch_items)
+                        except Exception as exc:
+                            if not is_cuda_oom_error(exc):
+                                raise
+                            print(
+                                "RTMPose: CUDAメモリ不足（OOM）が発生したため、バッチサイズを 1 にフォールバックして続行します。",
+                                flush=True,
+                            )
+                            _clear_cuda_cache()
+                            effective_rtmpose_batch = 1
+                            inferred = [
+                                infer_pose_single(pose_model, frm, box)
+                                for frm, box in batch_items
+                            ]
+                    else:
+                        inferred = [
+                            infer_pose_single(pose_model, frm, box)
+                            for frm, box in batch_items
+                        ]
+                    for pos, pose_pair in zip(valid_positions, inferred):
+                        pose_results[pos] = pose_pair
+
+                for (idx, frame, target_box), (restored_keypoints, pose_scores) in zip(
+                    buffered, pose_results
+                ):
+                    if target_box is not None:
+                        target_box_count += 1
                     if restored_keypoints is not None:
                         pose_success_count += 1
-                        previous_target_keypoints = restored_keypoints
-                        previous_target_scores = pose_scores
-                frame_data = {
-                    "frame": frame_count,
-                    "time_seconds": frame_count / fps,
-                    "persons": [],
-                }
-                if restored_keypoints is not None:
-                    person = {
-                        "person_id": target_stable_id,
-                        "yolo_track_id": target_stable_id,
+                        annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
+
+                    frame_data = {
+                        "frame": idx,
+                        "time_seconds": idx / fps,
+                        "persons": [],
                     }
-                    for index, name in enumerate(COCO_KEYPOINTS):
-                        x, y = restored_keypoints[index]
-                        person[name] = {
-                            "x": x,
-                            "y": y,
-                            "score": float(pose_scores[index]),
+                    if restored_keypoints is not None:
+                        person = {
+                            "person_id": target_stable_id,
+                            "yolo_track_id": target_stable_id,
                         }
-                    frame_data["persons"].append(person)
+                        for kp_index, name in enumerate(COCO_KEYPOINTS):
+                            x, y = restored_keypoints[kp_index]
+                            person[name] = {
+                                "x": x,
+                                "y": y,
+                                "score": float(pose_scores[kp_index]),
+                            }
+                        frame_data["persons"].append(person)
 
-                csv_writer.writerow(make_csv_row(frame_data))
+                    csv_writer.writerow(make_csv_row(frame_data))
 
-                if restored_keypoints is not None:
-                    label_x, label_y = map(int, target_box[:2])
+                    if restored_keypoints is not None and target_box is not None:
+                        label_x, label_y = map(int, target_box[:2])
+                        cv2.putText(
+                            frame,
+                            f"YOLO stable_id: {target_stable_id}",
+                            (label_x, max(25, label_y - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+
                     cv2.putText(
                         frame,
-                        f"YOLO stable_id: {target_stable_id}",
-                        (label_x, max(25, label_y - 8)),
+                        f"Frame: {idx + 1}",
+                        (40, 80),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 255),
+                        1.0,
+                        (0, 0, 255),
                         2,
                         cv2.LINE_AA,
                     )
 
-                cv2.putText(
-                    frame,
-                    f"Frame: {frame_count + 1}",
-                    (40, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+                    writer.write(frame)
+                    frame_count += 1
 
-                writer.write(frame)
-                frame_count += 1
+                    if total_pose_frames > 0:
+                        progress = 50 + int(frame_count * 50 / total_pose_frames)
+                        if progress > last_progress:
+                            print(f"PROGRESS:{progress}:RTMLIB", flush=True)
+                            last_progress = progress
 
-                if total_pose_frames > 0:
-                    progress = 50 + int(frame_count * 50 / total_pose_frames)
-                    if progress > last_progress:
-                        print(f"PROGRESS:{progress}:RTMLIB", flush=True)
-                        last_progress = progress
-
-                if frame_count % 30 == 0:
-                    print(f"Processed {frame_count} frames", flush=True)
+                    if frame_count % 30 == 0:
+                        print(f"Processed {frame_count} frames", flush=True)
         finally:
             capture.release()
             writer.release()
@@ -1424,7 +1633,7 @@ def run_analysis_worker(config_path: Path) -> None:
 
     globals()["cv2"] = importlib.import_module("cv2")
     rtmlib = importlib.import_module("rtmlib")
-    globals()["Body"] = rtmlib.Body
+    globals()["RTMPose"] = rtmlib.RTMPose
     globals()["draw_skeleton"] = rtmlib.draw_skeleton
     globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
 

@@ -642,6 +642,16 @@ class BackendApi:
                 except (ValueError, TypeError):
                     pass
 
+        # Clamp batch size settings to 1..64
+        max_batch = int(getattr(gui, "MAX_BATCH_SIZE", 64))
+        for batch_key in ("YOLO_BATCH_SIZE", "RTMPOSE_BATCH_SIZE"):
+            if batch_key in sanitized:
+                try:
+                    val = int(float(sanitized[batch_key]))
+                except (ValueError, TypeError):
+                    val = 1
+                sanitized[batch_key] = max(1, min(max_batch, val))
+
         # Float keys
         for k in self.float_keys:
             if k in sanitized and sanitized[k] is not None and sanitized[k] != "":

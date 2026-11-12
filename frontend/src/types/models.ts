@@ -23,11 +23,13 @@ export interface JobSettings {
   MODEL_MODE: string;
   YOLO_MODEL: string;
   YOLO_CLASSES: number[];
+  YOLO_BATCH_SIZE?: number;
   YOLO_TRACK_ID: number | null;
   CSV_MAX_PERSONS: number;
   RTMLIB_POSE_MODEL: string;
   RTMLIB_POSE_INPUT_SIZE: string;
   RTMLIB_PERSON_DETECTOR: string;
+  RTMPOSE_BATCH_SIZE?: number;
   // Overlay settings
   DRAW_SKELETON?: boolean;
   DRAW_BBOX?: boolean;

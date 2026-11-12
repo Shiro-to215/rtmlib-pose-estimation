@@ -101,6 +101,20 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
             onChange={(v) => setFieldValue('YOLO_TRACK_ID', v)}
           />
         </div>
+
+        <div className="grid grid-cols-2 gap-4 mt-2">
+          <SliderWithInput
+            label="YOLO バッチサイズ (YOLO_BATCH_SIZE)"
+            description="一度にGPUへ送るフレーム数（1〜64。CPU時は1固定、VRAM不足時は1へフォールバック）"
+            value={values.YOLO_BATCH_SIZE ?? 1}
+            min={1}
+            max={64}
+            step={1}
+            unit="枚"
+            onChange={(v) => setFieldValue('YOLO_BATCH_SIZE', Math.round(v))}
+            error={errors.YOLO_BATCH_SIZE}
+          />
+        </div>
       </div>
 
       {/* Group: RTMPose 設定 */}
@@ -126,14 +140,26 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
 
           <DropdownSelect
             label="RTMLib人物検出器 (RTMLIB_PERSON_DETECTOR)"
-            description="YOLOX検出器（mode＝連動）"
+            description="現在未使用（第1段階のYOLO11枠を直接利用）"
             value={values.RTMLIB_PERSON_DETECTOR || 'mode'}
             options={detectorChoices}
             onChange={(v) => setFieldValue('RTMLIB_PERSON_DETECTOR', v)}
           />
         </div>
 
-        <div className="grid grid-cols-3 gap-3 mt-3">
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          <SliderWithInput
+            label="RTMPose バッチサイズ (RTMPOSE_BATCH_SIZE)"
+            description="一度に姿勢推定するフレーム数（1〜64。非対応ONNX/CPU/VRAM不足時は1へフォールバック）"
+            value={values.RTMPOSE_BATCH_SIZE ?? 1}
+            min={1}
+            max={64}
+            step={1}
+            unit="枚"
+            onChange={(v) => setFieldValue('RTMPOSE_BATCH_SIZE', Math.round(v))}
+            error={errors.RTMPOSE_BATCH_SIZE}
+          />
+
           <SliderWithInput
             label="関節スコアしきい値 (KEYPOINT_THRESHOLD)"
             description="このスコア未満の関節は未検出として扱います"
@@ -143,10 +169,12 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
             step={0.05}
             onChange={(v) => setFieldValue('KEYPOINT_THRESHOLD', parseFloat(v.toFixed(2)))}
           />
+        </div>
 
+        <div className="grid grid-cols-2 gap-4 mt-2">
           <SliderWithInput
             label="内部検出器スコア (RTMLIB_DETECTOR_SCORE_THRESHOLD)"
-            description="RTMLib内部人物検出スコアしきい値"
+            description="設定保存用（現在は第1段階のYOLO11枠を直接使用するため未使用）"
             value={values.RTMLIB_DETECTOR_SCORE_THRESHOLD ?? 0.7}
             min={0.1}
             max={1.0}
@@ -156,7 +184,7 @@ export const DetectionConfidenceTab: React.FC<DetectionConfidenceTabProps> = ({
 
           <SliderWithInput
             label="内部検出器NMS (RTMLIB_DETECTOR_NMS_THRESHOLD)"
-            description="RTMLib内部人物検出NMS IoUしきい値"
+            description="設定保存用（現在は第1段階のYOLO11枠を直接使用するため未使用）"
             value={values.RTMLIB_DETECTOR_NMS_THRESHOLD ?? 0.45}
             min={0.1}
             max={1.0}

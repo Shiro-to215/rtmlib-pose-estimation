@@ -51,6 +51,12 @@ export function useSettingsForm(
     if (key === 'CSV_MAX_PERSONS' && (val < 1 || val > 20)) {
       return '最大人数は 1 〜 20 の範囲で指定してください。';
     }
+    if (
+      (key === 'YOLO_BATCH_SIZE' || key === 'RTMPOSE_BATCH_SIZE') &&
+      (!Number.isInteger(val) || val < 1 || val > 64)
+    ) {
+      return 'バッチサイズは 1 〜 64 の整数で指定してください。';
+    }
     if (key === 'YOLO_CLASSES') {
       if (!Array.isArray(val) || val.length === 0) return '検出対象クラスIDを1つ以上入力してください。';
     }
