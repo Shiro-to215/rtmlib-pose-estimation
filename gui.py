@@ -17,6 +17,7 @@ from pose_estimators import (
     RTMLIB_POSE_ASSETS,
     VITPOSE_ASSETS,
     clear_cuda_cache as _estimator_clear_cuda_cache,
+    configure_hf_environment,
     create_pose_estimator as _factory_create_pose_estimator,
     draw_pose_skeleton,
     resolve_rtmlib_selection,
@@ -2240,6 +2241,7 @@ def run_analysis_worker(config_path: Path) -> None:
 
     os.environ.setdefault("ORT_LOGGING_LEVEL", "3")
     os.environ.setdefault("YOLO_VERBOSE", "False")
+    configure_hf_environment()
     warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
 
     settings = normalize_legacy_rtmlib_settings(
