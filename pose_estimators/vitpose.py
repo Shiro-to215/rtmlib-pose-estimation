@@ -1,7 +1,12 @@
 """ViTPose++ (PyTorch / Hugging Face Transformers) estimator implementation."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from contextlib import contextmanager
+import importlib
+import os
+import threading
+import time
+from typing import Any, Iterator, Optional
 
 import cv2
 import numpy as np
@@ -192,9 +197,174 @@ def normalize_crop_bgr_to_chw(crop_bgr: np.ndarray) -> np.ndarray:
     return np.transpose(rgb, (2, 0, 1))
 
 
+_HF_TRUE_VALUES = frozenset({"1", "ON", "YES", "TRUE"})
+_MIN_LOG_DOWNLOAD_BYTES = 1024 * 1024  # Skip small metadata files (< 1 MiB)
+_PROGRESS_STEP_PCT = 5
+_PROGRESS_INTERVAL_SEC = 5.0
+
+
+def configure_hf_environment() -> None:
+    """Apply safe Hugging Face defaults before huggingface_hub is imported."""
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
+def _format_bytes(num_bytes: float) -> str:
+    """Format a byte count into a human-readable IEC-scaled string."""
+    size = max(0.0, float(num_bytes))
+    if size < 1024.0:
+        return f"{size:.0f} B"
+    if size < 1024.0 ** 2:
+        return f"{size / 1024.0:.1f} KB"
+    if size < 1024.0 ** 3:
+        return f"{size / (1024.0 ** 2):.1f} MB"
+    return f"{size / (1024.0 ** 3):.2f} GB"
+
+
+class _DownloadProgressLogger:
+    """Lightweight tqdm-compatible progress reporter emitting throttled stdout lines."""
+
+    _class_lock = threading.RLock()
+
+    def __init__(
+        self,
+        *args: Any,
+        total: int | float | None = None,
+        initial: int | float = 0,
+        desc: str | None = None,
+        unit: str | None = None,
+        disable: bool | None = False,
+        name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        del args, kwargs
+        self._lock = threading.Lock()
+        self.total = int(total) if total is not None else None
+        self.n = max(0, int(initial or 0))
+        self._start_n = self.n
+        self.desc = str(desc or "").strip()
+        self._unit = str(unit or "")
+        self._name = str(name or "")
+        env_disabled = (os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") or "").strip().upper() in _HF_TRUE_VALUES
+        self._enabled = (
+            not bool(disable)
+            and not env_disabled
+            and self._unit == "B"
+            and self._name != "huggingface_hub.snapshot_download.transfer"
+        )
+        now = time.monotonic()
+        self._start_time = now
+        self._last_log_time = now
+        self._last_log_pct = -1
+        self._last_log_bytes = self.n
+        self._completed_logged = False
+
+    @classmethod
+    def get_lock(cls) -> threading.RLock:
+        return cls._class_lock
+
+    @classmethod
+    def set_lock(cls, lock: Any) -> None:
+        cls._class_lock = lock
+
+    def __enter__(self) -> "_DownloadProgressLogger":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def _emit_progress(self, pct: int, now: float) -> None:
+        total = self.total or 0
+        elapsed = max(now - self._start_time, 1e-6)
+        transferred = max(0, self.n - self._start_n)
+        rate_str = _format_bytes(transferred / elapsed)
+        label = f" [{self.desc}]" if self.desc else ""
+        print(
+            f"ダウンロード進捗{label}: {pct}% ({_format_bytes(self.n)} / {_format_bytes(total)}, {rate_str}/s)",
+            flush=True,
+        )
+        self._last_log_time = now
+        self._last_log_pct = pct
+        self._last_log_bytes = self.n
+        if pct >= 100:
+            self._completed_logged = True
+
+    def update(self, n: int | float | None = 1) -> None:
+        if n is None:
+            return
+        with self._lock:
+            self.n = max(0, self.n + int(n))
+            if not self._enabled or self.total is None or self.total < _MIN_LOG_DOWNLOAD_BYTES:
+                return
+            pct = min(100, int((self.n * 100) // self.total))
+            now = time.monotonic()
+            if pct >= 100:
+                if not self._completed_logged:
+                    self._emit_progress(100, now)
+                return
+            pct_reached = self._last_log_pct < 0 and pct >= _PROGRESS_STEP_PCT
+            step_reached = self._last_log_pct >= 0 and pct >= self._last_log_pct + _PROGRESS_STEP_PCT
+            interval_reached = (now - self._last_log_time) >= _PROGRESS_INTERVAL_SEC and self.n > self._last_log_bytes
+            if pct_reached or step_reached or interval_reached:
+                self._emit_progress(pct, now)
+
+    def refresh(self) -> None:
+        pass
+
+    def set_description(self, desc: str | None = None, refresh: bool = True) -> None:
+        del refresh
+        if desc is not None:
+            self.desc = str(desc).strip()
+
+    def set_description_str(self, desc: str | None = None, refresh: bool = True) -> None:
+        self.set_description(desc, refresh=refresh)
+
+    def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+        del s, refresh
+
+    def set_transfer_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+        del s, refresh
+
+    def close(self) -> None:
+        with self._lock:
+            if (
+                self._enabled
+                and self.total is not None
+                and self.total >= _MIN_LOG_DOWNLOAD_BYTES
+                and self.n >= self.total
+                and not self._completed_logged
+            ):
+                self._emit_progress(100, time.monotonic())
+
+
+@contextmanager
+def _hf_download_progress_logging() -> Iterator[None]:
+    """Temporarily route huggingface_hub download progress bars to throttled stdout logs."""
+    hf_tqdm_mod = importlib.import_module("huggingface_hub.utils.tqdm")
+
+    try:
+        hf_snap_mod = importlib.import_module("huggingface_hub._snapshot_download")
+    except Exception:
+        hf_snap_mod = None
+
+    orig_utils_tqdm = getattr(hf_tqdm_mod, "tqdm", None)
+    orig_snap_tqdm = getattr(hf_snap_mod, "hf_tqdm", None) if hf_snap_mod is not None else None
+    hf_tqdm_mod.tqdm = _DownloadProgressLogger  # type: ignore[assignment]
+    if hf_snap_mod is not None and orig_snap_tqdm is not None:
+        hf_snap_mod.hf_tqdm = _DownloadProgressLogger  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        if orig_utils_tqdm is not None:
+            hf_tqdm_mod.tqdm = orig_utils_tqdm
+        if hf_snap_mod is not None and orig_snap_tqdm is not None:
+            hf_snap_mod.hf_tqdm = orig_snap_tqdm
+
+
 def preimport_vitpose_dependencies() -> None:
     """Pre-import Hugging Face transformers ViTPose class into RAM (no weights or CUDA)."""
     try:
+        configure_hf_environment()
         import transformers
 
         transformers.utils.logging.disable_progress_bar()
@@ -225,6 +395,7 @@ class ViTPoseEstimator(BasePoseEstimator):
         self._model = pytorch_model if pytorch_model is not None else self._load_model()
 
     def _load_model(self) -> Any:
+        configure_hf_environment()
         import torch
         import transformers
 
@@ -253,7 +424,8 @@ class ViTPoseEstimator(BasePoseEstimator):
         except OSError:
             # First-time download or incomplete local cache: fall back to Hugging Face Hub.
             print(f"初回モデルダウンロード中: {repo_id}", flush=True)
-            model = _from_pretrained(local_files_only=False)
+            with _hf_download_progress_logging():
+                model = _from_pretrained(local_files_only=False)
         model.to(self._device)
         model.eval()
         return model
