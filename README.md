@@ -1,6 +1,7 @@
-# 動画姿勢推定アプリ（YOLO11 + ByteTrack + RTMLib / RTMPose）
+# 動画姿勢推定アプリ（YOLO11 + ByteTrack + RTMPose / ViTPose++）
 
-動画から人物を検出・追跡し、主要人物1名の17関節キーポイント（COCO形式）を推定して骨格動画・RTMPose推論用crop動画2本（骨格なし／骨格あり）・CSVデータ・動画メタデータを出力するデスクトップアプリケーションです。
+動画から人物を検出・追跡し、主要人物1名の17関節キーポイント（COCO形式）を推定して骨格動画・姿勢推論用crop動画2本（骨格なし／骨格あり）・CSVデータ・動画メタデータを出力するデスクトップアプリケーションです。
+姿勢推定エンジンは高速・省メモリな **RTMPose（RTMLib / ONNX Runtime）** と、研究向け高精度な **ViTPose++（PyTorch / Hugging Face Transformers）** を切り替えられます。
 デスクトップUIは **PyWebView + React/Vite** で構成されており、複数動画の予約登録・連続自動解析・中断/再開・パラメータ検索・ドラッグ＆ドロップに対応しています。
 
 ---
@@ -60,7 +61,8 @@
 | **Git**（`git clone` を使う場合） | [Git 公式ダウンロード](https://git-scm.com/downloads) | ZIP ダウンロードで済ませる場合は不要です（macOS は後述の Command Line Tools に含まれます）。 |
 
 > **初回解析時の自動ダウンロード（インターネット接続）**
-> YOLO11 の重みファイル（`yolo11*.pt`）および RTMPose のモデル（ONNX zip）は Git には含まれていません。**初回の解析実行時に自動的にダウンロード**されるため、初回実行時はインターネットに接続した状態で行ってください。
+> YOLO11 の重みファイル（`yolo11*.pt`）、RTMPose のモデル（ONNX zip）、および ViTPose++ のモデル（Hugging Face Hub の `usyd-community/vitpose-plus-*`）は Git には含まれていません。**各モデルの初回解析実行時に自動的にダウンロード**されるため、初回実行時はインターネットに接続した状態で行ってください。
+> なお、ViTPose++ は 2回目以降ローカルキャッシュを優先読み込み（`local_files_only=True`）するため、ネットワーク通信なしでオフライン動作します。
 
 ### 2.2 OS・実行環境別の追加ソフトウェア
 
@@ -202,9 +204,9 @@ python -m pip install -r requirements.txt
 
 #### GPU版（`requirements-gpu.txt`）の技術構成と `--no-deps` の理由
 
-- GPU用の構成は **PyTorch 2.14.1 / torchvision 0.29.1（CUDA 13.0版）** と **ONNX Runtime GPU 1.31.1** です。PyTorch に含まれる CUDA・cuDNN DLL を `onnxruntime-gpu` にも読み込ませるため（[gui.py](gui.py) 内の `ort.preload_dlls()`）、CUDA Toolkit の別途インストールは不要です。
+- GPU用の構成は **PyTorch 2.14.1 / torchvision 0.29.1（CUDA 13.0版）**・**ONNX Runtime GPU 1.31.1**・**Transformers 4.49.0以上（ViTPose++ 用）** です。RTMPose 実行時に PyTorch に含まれる CUDA・cuDNN DLL を `onnxruntime-gpu` にも読み込ませるため（[gui.py](gui.py) 内の `ort.preload_dlls()`）、CUDA Toolkit の別途インストールは不要です。
 - `rtmlib==0.0.16` はパッケージの依存情報に CPU版の `onnxruntime` を指定しています。CPU版 `onnxruntime` と GPU版 `onnxruntime-gpu` は同じ Python モジュール名（`onnxruntime`）を上書き共有するため、同時に導入すると GPU 推論が壊れます。
-- そのため GPU 環境では、必要な依存（`opencv-contrib-python`・`numpy`・`tqdm` 等）を含めた `requirements-gpu.txt` を先に入れ、`rtmlib==0.0.16` のみ `--no-deps` で導入する手順としています。
+- そのため GPU 環境では、必要な依存（`opencv-contrib-python`・`numpy`・`tqdm`・`transformers` 等）を含めた `requirements-gpu.txt` を先に入れ、`rtmlib==0.0.16` のみ `--no-deps` で導入する手順としています。
 - この構成では `pip check` が「`rtmlib` に `onnxruntime` が不足している」と報告することがありますが、実行時には `onnxruntime-gpu` がその機能を提供するため正常動作します。
 
 #### 既存の CPU 環境から GPU 環境へ切り替える場合（Windows）
@@ -217,12 +219,12 @@ python -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pip install --no-deps rtmlib==0.0.16
 ```
 
-#### GPU環境を維持したまま新UIライブラリ（`pywebview`）だけを追加する場合
+#### GPU環境を維持したまま新機能パッケージだけを追加する場合
 
-既に動作中の旧 GPU 環境（`.venv`）をアップデートする場合は、`requirements.txt` を再実行せず `pywebview` だけを追加してください（`requirements.txt` を実行すると CPU版 `onnxruntime` が再導入されてしまいます）：
+既に動作中の旧 GPU 環境（`.venv`）をアップデートする場合は、`requirements.txt` を再実行せず不足パッケージだけを追加してください（`requirements.txt` を実行すると CPU版 `onnxruntime` が再導入されてしまいます）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install "pywebview>=6.0"
+.\.venv\Scripts\python.exe -m pip install "pywebview>=6.0" "transformers>=4.49.0"
 ```
 
 導入方法や互換性の詳細は [PyTorch公式](https://pytorch.org/get-started/previous-versions/) および [ONNX Runtime公式（CUDA Execution Provider）](https://onnxruntime.ai/docs/execution-providers/CUDA-Execution-Provider.html) を参照してください。
@@ -240,14 +242,14 @@ python -m pip install -r requirements.txt
    - **`■ 解析中断`**: 現在実行中の解析プロセスを停止し、その動画を予約リストの先頭（待機中）へ戻します。
    - 右側のステータスバナーに現在の状態・進捗率が表示されます。
 2. **左ペイン（解析中モニター）** — 設定画面などを開いている間も常に表示されます。
-   - ステータスバッジ（`待機中` / `YOLO 処理中` / `RTMPose 処理中` / `中断処理中`）
+   - ステータスバッジ（`待機中` / `解析実行中` / `YOLO 処理中` / `RTMPose 処理中` / `ViTPose++ 処理中` / `中断処理中`）
    - 16:9 動画プレビュー・動画名・出力フォルダー名・解像度
-   - 円形進捗バー（0〜50%: YOLO 人物検出・追跡 / 50〜100%: RTMPose 骨格推定）
+   - 円形進捗バー（0〜50%: YOLO 人物検出・追跡 / 50〜100%: 選択したエンジン（RTMPose / ViTPose++）の骨格推定）
    - 実行ログ欄（クリアボタン付き）
 3. **右ペイン（ワークスペース）** — 以下の3画面を切り替えて操作します。
-   - **`予約リスト`**: 登録済みの動画カード一覧、`削除`・`上へ`・`下へ`・`基本設定` ツールバー、点線枠 `＋ 予約を追加`
-   - **`予約を追加`**: 動画選択・出力先指定・サムネイル指定
-   - **`基本設定` / 個別 `設定`**: 検索バー＋3つの設定タブ
+   - **`予約リスト`**: 登録済みの動画カード一覧（各カードに姿勢推定モデル・YOLOサイズ・デバイスを表示）、`削除`・`上へ`・`下へ`・`基本設定` ツールバー、点線枠 `＋ 予約を追加`
+   - **`予約を追加`**: 動画選択・出力先指定・サムネイル指定（下部に適用される初期設定サマリー表示）
+   - **`基本設定` / 個別 `設定`**: 検索バー＋3つの設定タブ（検索バー入力時は3タブの全項目を1画面に展開表示）
 
 ### 4.2 基本の流れ（予約〜連続解析）
 
@@ -280,28 +282,28 @@ python -m pip install -r requirements.txt
 ### 4.4 実行ログ・進捗バー・デバイスの挙動
 
 - **実行デバイス（`DEVICE`）の挙動**:
-  - `auto`（初期値）: PyTorch CUDA と ONNX Runtime CUDA が両方使える場合に GPU を選択します。GPU環境が不足している場合は、理由をログに表示して自動的に CPU を選択します。
-  - `cuda`: 両方の推論（YOLO + RTMLib）を GPU で実行します。GPU環境が不足している場合はエラーで停止します。CUDA DLL の読み込みや RTMLib の初期化に失敗した場合も、長い YOLO 処理を始める前に停止します。
+  - `auto`（初期値）: `POSE_ENGINE = rtmpose` の場合は PyTorch CUDA と ONNX Runtime CUDA（`CUDAExecutionProvider`）が両方使える場合に GPU を選択し、`POSE_ENGINE = vitpose` の場合は PyTorch CUDA が使える場合に GPU を選択します。GPU 環境が不足している場合は、理由をログに表示して自動的に CPU を選択します。
+  - `cuda`: 両方の推論（YOLO + 姿勢推定モデル）を GPU で実行します。GPU 環境が不足している場合はエラーで停止します。CUDA DLL の読み込みや姿勢推定モデルの CUDA 初期化に失敗した場合も、長い YOLO 処理を始める前に停止します。
   - `cpu`: 両方の推論を CPU で実行します。
-  - 実行ログには、使用デバイス名・GPU名・RTMLib の姿勢推定器（`pose_model`）の実行プロバイダー（GPU実行時は `CUDAExecutionProvider`）を表示します。なお動画のデコード・エンコードや追跡処理などは引き続き CPU も使用します。
+  - 実行ログには、`実行デバイス: CUDA:0 (<GPU名>)`（または `CPU`）、`姿勢モデル: RTMPose-...` / `ViTPose++-...`、各段階の実行バッチサイズ（VRAM 空き容量による自動制限・OOM 発生時の自動半減フォールバックを含む）、および `mp4v` 制限に伴う FPS 調整時（`動画書き出しFPS調整`）のメッセージを表示します。なお動画のデコード・エンコードや追跡処理などは引き続き CPU も使用します。
 - **進捗バー**:
   - `0〜50%`: YOLO 処理（動画情報の総フレーム数を使った概算です。動画ヘッダ情報と実際に読み込めるフレーム数が異なる場合、完了時に 50% へ飛ぶことがあります）。
-  - `50〜100%`: RTMLib 処理（YOLO終了時にログへ表示する「実処理フレーム数」を基準に計算します）。
+  - `50〜100%`: 姿勢推定処理（RTMPose / ViTPose++。YOLO 終了時にログへ表示する「実処理フレーム数」を基準に計算します）。
 - **分析速度ログ**:
-  - 解析完了時のログに、YOLO・RTMLib それぞれの分析時間（秒）と分析速度（フレーム/秒）を小数点以下2桁で表示します。分析時間にはモデル初期化・動画読み込み・描画・結果保存を含みます。
+  - 解析完了時のログに、YOLO と選択した姿勢推定エンジン（`RTMPose` または `ViTPose++`）それぞれの分析時間（秒）と分析速度（フレーム/秒）を小数点以下2桁で表示します。分析時間にはモデル初期化・動画読み込み・描画・結果保存を含みます。
 
 ---
 
 ## 5. 設定項目の説明
 
-設定画面（`基本設定`／個別 `設定`）には上部キーワード検索と3つのタブがあります。
+設定画面（`基本設定`／個別 `設定`）には上部検索バー（キーワード入力時は3タブの全項目を1画面に展開表示）と3つのタブがあります。
 
 ### タブ1：基本・出力設定
 
 | 設定キー | UI表示名 | 初期値 | 説明 |
 | --- | --- | --- | --- |
+| `POSE_ENGINE` | 姿勢推定エンジン | `rtmpose` | `RTMPose`（高速・省メモリ / ONNX）または `ViTPose++`（研究用・最高精度 / PyTorch）から選択します。非選択側の設定も保持されます。 |
 | `DEVICE` | 推論実行デバイス | `auto` | `auto`（自動判定）/ `cpu` / `cuda` から選択します。 |
-| `BACKEND` | 推論バックエンド | `onnxruntime` | RTMLib の実行バックエンド（`onnxruntime` 推奨）。 |
 | `CSV_MAX_PERSONS` | CSV出力の最大人数列数 | `3` | CSV に用意する人物列の最大数（1〜20）です。必要な人数に合わせて変更してください。 |
 
 **YOLO 検出・しきい値設定**
@@ -309,21 +311,22 @@ python -m pip install -r requirements.txt
 | 設定キー | UI表示名 | 初期値 | 説明 |
 | --- | --- | --- | --- |
 | `YOLO_MODEL` | YOLOモデル | `yolo11m.pt` | `n`（最速）〜 `x`（最高精度）を選択します。初回実行時に自動ダウンロードされます。 |
-| `YOLO_BATCH_SIZE` | YOLO バッチサイズ | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時は `1` に固定され、CUDA メモリ不足（OOM）時は自動で `1` へフォールバックします。 |
-| `YOLO_IMAGE_SIZE` | YOLO 入力解像度 | `1280` | YOLO の入力解像度（px）。大きいほど小さい人物・遠景を検出しやすくなりますが処理時間が増えます。 |
+| `YOLO_BATCH_SIZE` | YOLO バッチサイズ | `1` | YOLO11 で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時は `1` に固定され、空き VRAM 容量による自動調整・CUDA メモリ不足（OOM）時の半減フォールバックを行います。 |
+| `YOLO_IMAGE_SIZE` | YOLO 入力解像度 | `1280` | YOLO の入力解像度（`320`〜`2560` px, 32刻み）。大きいほど小さい人物・遠景を検出しやすくなりますが処理時間が増えます。 |
 | `YOLO_CONFIDENCE` | YOLO 検出信頼度 | `0.20` | YOLO の人物検出信頼度しきい値（`0.01`〜`1.0`）。 |
 | `YOLO_IOU` | YOLO NMS IoU しきい値 | `0.50` | YOLO の NMS IoU しきい値。重複ボックスの除外基準です。 |
-| `CROP_PADDING_RATIO` | 人物クロップ余白率 | `0.25` | 対象人物を切り出して RTMLib へ渡す際に上下左右へ追加する余白率（`0.25` = 25%）。 |
+| `CROP_PADDING_RATIO` | 人物クロップ余白率 | `0.25` | 対象人物を切り出して姿勢推定エンジンへ渡す際に上下左右へ追加する余白率（`0.25` = 25%）。 |
 | `YOLO_CLASSES` | 検出対象クラスID | `[0]` | 検出対象の COCO クラス ID（`0` = `person`）。カンマ区切りで複数指定できます。 |
 | `YOLO_TRACK_ID` | 固定追跡ID | 空欄 (`None`) | 指定した場合のみ、その YOLO 追跡 ID を対象にします。空欄なら動画全体の移動量から主要人物を自動選択します。 |
 
-**RTMPose 骨格推定設定**
+**RTMPose 骨格推定設定（`POSE_ENGINE = rtmpose` 選択時に表示）**
 
 | 設定キー | UI表示名 | 初期値 | 説明 |
 | --- | --- | --- | --- |
 | `RTMLIB_POSE_MODEL` | RTMPose モデル | `x` | `t` / `s` / `m` / `l` / `x` から選択します。 |
 | `RTMLIB_POSE_INPUT_SIZE` | 入力解像度 | `384x288` | `256x192` または `384x288` から選択します。 |
-| `RTMPOSE_BATCH_SIZE` | RTMPose バッチサイズ | `1` | RTMPose で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時・動的バッチ非対応 ONNX モデル・CUDA OOM 時は自動で `1` へフォールバックします。 |
+| `BACKEND` | 推論バックエンド | `onnxruntime` | RTMPose の実行バックエンド（`onnxruntime` / `opencv`、`onnxruntime` 推奨）。 |
+| `RTMPOSE_BATCH_SIZE` | RTMPose バッチサイズ | `1` | RTMPose で一度に推論するフレーム数（`1`〜`512`）。CPU 実行時・動的バッチ非対応 ONNX モデル・空き VRAM 制限・CUDA OOM 時は自動調整または `1` へフォールバックします。 |
 | `KEYPOINT_THRESHOLD` | 関節スコアしきい値 | `0.45` | この値未満の関節は骨格描画や幾何計算で低信頼として扱われます。 |
 
 > **RTMPose の解像度互換性仕様**
@@ -332,11 +335,26 @@ python -m pip install -r requirements.txt
 > - `x`: `384x288` のみ対応
 > - 非対応の組み合わせを指定した場合、設定画面に警告が出るとともに、解析開始前・保存前チェックでエラーになります。
 
+**ViTPose++ 骨格推定設定（`POSE_ENGINE = vitpose` 選択時に表示）**
+
+| 設定キー | UI表示名 | 初期値 | 説明 |
+| --- | --- | --- | --- |
+| `VITPOSE_MODEL` | ViTPose++ モデルサイズ | `h` | `s`（Small / 最軽量）/ `b`（Base / バランス）/ `l`（Large / 高精度）/ `h`（Huge / 最高精度）から選択します（Hugging Face `usyd-community/vitpose-plus-*`）。 |
+| `VITPOSE_INPUT_SIZE` | 解像度 | `256x192` | `256x192`（Classic デコーダ）固定です。 |
+| `VITPOSE_BATCH_SIZE` | ViTPose++ バッチサイズ | `4` | 12GB VRAM での OOM 防止のため `1`〜`8` に制限（推奨 `4`）。CPU 時は `1` 固定、空き VRAM による上限調整・CUDA OOM 時の自動半減を行います。 |
+| `VITPOSE_FLIP_TEST` | Flip Test（左右反転 TTA） | `true` (`ON`) | 元画像と左右反転画像のヒートマップを平均化し精度・安定性を向上します（`OFF` で推論速度約2倍）。 |
+| `KEYPOINT_THRESHOLD` | 関節スコアしきい値 | `0.45` | この値未満の関節は骨格描画や幾何計算で低信頼として扱われます（RTMPose 側と共通キー）。 |
+
+> **ViTPose++ の内部最適化仕様（固定）**
+> - Pass 1（YOLO）のモデル破棄・VRAM 解放後にのみ ViTPose++ モデルをロードします（VRAM 競合防止）。
+> - CUDA 実行時は **FP16 半精度** で順伝播し、UDP + DARK（Taylor 展開）サブピクセル座標算出の直前に **FP32** へ戻して誤差・ジッターを抑制します。
+> - 初回のみ Hugging Face Hub から自動ダウンロードし、2回目以降はローカルキャッシュ（`local_files_only=True`）を優先読み込みします。
+
 ### タブ2：トラッキング・重み設定
 
 | グループ | 主な設定キー | 説明 |
 | --- | --- | --- |
-| トラッカー・対象ロック | `YOLO_TRACKER` (`bytetrack.yaml`), `TARGET_BOX_FILL_MAX_FRAMES` (`60`), `TARGET_LOCK_RAW_ID` (`true`), `TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING` (`true`), `TARGET_SELECTION_MIN_FRAMES` (`15`), `TARGET_SELECTION_COVERAGE_WEIGHT` (`0.5`) | 追跡アルゴリズム、欠損時の線形補間上限、対象人物の自動選択基準および生IDロック条件を設定します。 |
+| トラッカー・対象ロック | `YOLO_TRACKER` (`bytetrack.yaml` / `botsort.yaml`), `TARGET_BOX_FILL_MAX_FRAMES` (`60`), `TARGET_LOCK_RAW_ID` (`true`), `TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING` (`true`), `TARGET_SELECTION_MIN_FRAMES` (`15`), `TARGET_SELECTION_COVERAGE_WEIGHT` (`0.5`) | 追跡アルゴリズム、欠損時の線形補間上限、対象人物の自動選択基準および生IDロック条件を設定します。 |
 | 再捕捉・距離しきい値 | `TARGET_REACQUIRE_MAX_DISTANCE` (`300.0`), `TARGET_REACQUIRE_MIN_IOU` (`0.05`), `TARGET_TRACK_MATCH_THRESHOLD` (`0.75`), `TARGET_TRACK_MIN_IOU` (`0.15`), `TRACK_MAX_DISTANCE` (`250.0`), `TRACK_MAX_MISSED_FRAMES` (`8`), `TRACK_MATCH_THRESHOLD` (`2.0`) | 見失った後の再捕捉許容範囲とトラック維持のしきい値です。 |
 | マッチング・予測重み | `TRACK_CENTER_WEIGHT`, `TRACK_KEYPOINT_WEIGHT`, `TRACK_POSE_WEIGHT`, `TRACK_BBOX_WEIGHT`, `TRACK_VELOCITY_SMOOTHING`, `TRACK_RAW_ID_BONUS`, `TRACK_PREDICTED_BOX_WEIGHT`, `TRACK_PREDICTION_MAX_FRAMES`, `POSE_TRACK_*`, `POSE_BOX_*`, `POSE_TEMPORAL_WEIGHT` | トラックID安定化およびクロップ内での最適人物選択に使う各コスト重みです。 |
 
@@ -355,8 +373,8 @@ python -m pip install -r requirements.txt
 | ファイル名例 | 内容 |
 | --- | --- |
 | `跳躍動画.mp4` | 最終的な骨格推定結果の描画動画（対象人物の骨格＋`YOLO stable_id`＋`Frame` 番号入り） |
-| `跳躍動画-crop.mp4` | RTMPose 推論時に使用される前処理後の人物 crop 画像（骨格なし・`288×384` または `192×256`）の動画 |
-| `跳躍動画-crop-skeleton.mp4` | 上記 crop 画像に骨格のみを描画した動画（文字オーバーレイなし・`288×384` または `192×256`） |
+| `跳躍動画-crop.mp4` | 姿勢推定エンジン推論時に使用される前処理後の人物 crop 画像（骨格なし。RTMPose 時は `288×384` または `192×256`、ViTPose++ 時は `192×256`）の動画 |
+| `跳躍動画-crop-skeleton.mp4` | 上記 crop 画像に骨格のみを描画した動画（文字オーバーレイなし。RTMPose 時は `288×384` または `192×256`、ViTPose++ 時は `192×256`） |
 | `跳躍動画.csv` | フレームごとの関節座標・信頼度スコア記録（UTF-8 BOM付き） |
 | `跳躍動画_metadata.txt` | 元動画のパス、撮影日時（`exiftool` / `ffprobe`）、総フレーム数、解像度、FPS、動画長 |
 
@@ -369,10 +387,13 @@ python -m pip install -r requirements.txt
 
 ### 6.3 2段階処理アーキテクチャ
 
-1. **第1段階（全体追跡）**: 動画全体を YOLO11 + ByteTrack で先に処理し（`YOLO_BATCH_SIZE` に応じて複数フレームをバッチ推論）、中心位置・移動速度・バウンディングボックス重なり（IoU）を組み合わせて安定した人物ID（`stable_id`）を付与します。全フレームの軌跡を集計し、指定ID（`YOLO_TRACK_ID`）または動画全体で移動量が大きい人物を対象に決定します（第1段階の動画書き出しは行いません）。
-2. **第2段階（直接骨格推定）**: 動画を先頭から再度読み込み、第1段階で確定した対象人物の矩形（`target_box`）をもとに RTMPose 入力解像度（`288×384` 等）へアフィン変換して姿勢推定を行います（`YOLOX` による再検出はスキップします）。`RTMPOSE_BATCH_SIZE > 1` かつ ONNX モデルが動的バッチ対応の場合はバッチ推論し、結果を元動画へ骨格描画した動画・crop 動画2本（骨格なし／骨格あり、未検出フレームは黒画面でフレーム数一致）・CSV を保存します。
+1. **第1段階（全体追跡）**: 動画全体を YOLO11 + ByteTrack/BoT-SORT で先に処理し（`YOLO_BATCH_SIZE` に応じて複数フレームをバッチ推論）、中心位置・移動速度・バウンディングボックス重なり（IoU）を組み合わせて安定した人物ID（`stable_id`）を付与します。全フレームの軌跡を集計し、指定ID（`YOLO_TRACK_ID`）または動画全体で移動量が大きい人物を対象に決定します（第1段階の動画書き出しは行いません）。また `POSE_ENGINE = vitpose` の場合は、この Pass 1 実行中にバックグラウンドスレッド（`ViTPosePreimport`）で `transformers` ライブラリを事前読み込みし、Pass 2 への切り替え待ちを短縮します。完了時には YOLO モデルと CUDA キャッシュを解放して VRAM を空けます。
+2. **第2段階（直接骨格推定）**: 動画を先頭から再度読み込み、第1段階で確定した対象人物の矩形（`target_box`）をもとに選択エンジンの入力仕様へアフィン変換して姿勢推定を行います（`YOLOX` による再検出はスキップします）。
+   - **RTMPose 選択時**: ONNX / SimCC モデルへ前処理画像を渡し、`RTMPOSE_BATCH_SIZE > 1` かつ動的バッチ対応 ONNX モデルの場合はバッチ推論します。
+   - **ViTPose++ 選択時**: UDP アフィン変換・ImageNet 正規化を行って PyTorch モデル（CUDA 時は FP16）で推論し、Flip Test（有効時）と UDP + DARK（FP32）によるサブピクセル座標復号を行います。
+   - 推定結果を元動画へ骨格描画した動画・crop 動画2本（骨格なし／骨格あり、未検出フレームは黒画面でフレーム数一致）・CSV を保存します。OpenCV `mp4v` コーデックのタイムベース分母上限（65535）を超える FPS は自動調整して書き出します。
 
-※ 中間クロップ動画ファイルを読み戻して推論するのではなく、インメモリで推論用画像を作成したついでにそのまま動画へ書き出します。CPU 実行時や CUDA OOM 発生時（および RTMPose ONNX が静的バッチ固定の場合）は自動的にバッチサイズ `1` へフォールバックして処理を継続します。
+※ 中間クロップ動画ファイルを読み戻して推論するのではなく、インメモリで推論用画像を作成したついでにそのまま非同期ライターで動画へ書き出します。CPU 実行時・空き VRAM 上限到達時・CUDA OOM 発生時（および RTMPose ONNX が静的バッチ固定の場合）は自動的にバッチサイズを縮小（半減または `1` へフォールバック）して処理を継続します。また GPU 実行時は Windows WDDM の共有メモリ退避によるハングを防ぐため、空き VRAM に応じたプロセス上限（`set_per_process_memory_fraction`）を設定します。
 
 ---
 
@@ -384,7 +405,7 @@ python -m pip install -r requirements.txt
 python gui.py           # 標準起動（PyWebView + ビルド済み frontend/dist を使用）
 python gui.py --dev     # Vite 開発サーバー (http://localhost:5173) に接続して起動
 python gui.py --debug   # PyWebView デバッグモードを有効にして起動
-python gui.py --legacy  # 従来版 CustomTkinter GUI を起動
+python gui.py --legacy  # 従来版 CustomTkinter GUI を起動（RTMPose中心の旧設定UIのみ・ViTPose++用UIは未対応）
 ```
 
 ### フロントエンド（React/Vite）の編集・再ビルド
@@ -416,7 +437,9 @@ npm install
 # 全 Python テストの一括実行
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 
-# 個別スイート（例: PyWebView ブリッジ / バンドル検証 / 自動終了ウィンドウ起動テスト）
+# 個別スイート（例: 姿勢推定エンジン / ViTPose++ / PyWebView ブリッジ / バンドル検証 / 自動終了ウィンドウ起動テスト）
+.\.venv\Scripts\python.exe -m unittest tests/test_pose_estimators.py
+.\.venv\Scripts\python.exe -m unittest tests/test_api_bridge_vitpose.py
 .\.venv\Scripts\python.exe -m unittest tests/test_pywebview_migration.py
 .\.venv\Scripts\python.exe -m unittest tests/test_m3_bundle_and_build.py
 .\.venv\Scripts\python.exe -m unittest tests/test_pywebview_window_launch.py
@@ -448,3 +471,5 @@ node --test tests/*.mjs
   - Homebrew 版 Python 等で `tkinter` が入っていない場合は `brew install python-tk`（使用中の Python バージョンに合わせて `python-tk@3.14` 等）または [Python 公式インストーラー](https://www.python.org/downloads/) を使用してください（標準の PyWebView UI には Tkinter は不要です）。
 - **`_metadata.txt` の撮影日時が「取得不可」になる**
   - `exiftool` または `ffprobe` が未導入（または PATH が通っていない）状態です。[2.3 任意ツール](#23-任意ツール撮影日時の取得用) を参照してインストールしてください。
+- **ViTPose++ 初回実行時にモデル読み込みが進まない／エラーになる**
+  - 未ダウンロードのサイズ（`s` / `b` / `l` / `h`）を初めて使う場合のみ Hugging Face Hub への接続が必要です（ログに `初回モデルダウンロード中: usyd-community/vitpose-plus-...` が表示されます）。一度ダウンロードが完了すれば 2回目以降はローカルキャッシュからオフライン動作します。また既存の `.venv` で `transformers` が入っていない場合は `python -m pip install "transformers>=4.49.0"` を実行してください。
