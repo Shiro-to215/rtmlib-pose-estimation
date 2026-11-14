@@ -7,6 +7,4 @@ scipy>=1.11
 lap>=0.5.12
 Pillow>=10.0
 pywebview>=6.0
-customtkinter>=5.2
-tkinterdnd2>=0.4
 onnx>=1.16

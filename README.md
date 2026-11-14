@@ -405,7 +405,6 @@ python -m pip install -r requirements.txt
 python gui.py           # 標準起動（PyWebView + ビルド済み frontend/dist を使用）
 python gui.py --dev     # Vite 開発サーバー (http://localhost:5173) に接続して起動
 python gui.py --debug   # PyWebView デバッグモードを有効にして起動
-python gui.py --legacy  # 従来版 CustomTkinter GUI を起動（RTMPose中心の旧設定UIのみ・ViTPose++用UIは未対応）
 ```
 
 ### フロントエンド（React/Vite）の編集・再ビルド
@@ -460,15 +459,13 @@ node --test tests/*.mjs
 ## 8. トラブルシューティング
 
 - **「フロントエンドのビルドが必要です (`frontend/dist/index.html` が検出されませんでした)」と表示される**
-  - `frontend/dist/` が削除されているか、古い状態で取得されています。Node.js 導入後に `cd frontend && npm install && npm run build` を実行してください。一時的に旧UIで動かしたい場合は `python gui.py --legacy` も使えます。
+  - `frontend/dist/` が削除されているか、古い状態で取得されています。Node.js 導入後に `cd frontend && npm install && npm run build` を実行してください。
 - **Windows で起動しても画面が開かない・WebView 関連エラーが出る**
   - Windows 10 等で Microsoft Edge WebView2 ランタイムが未導入の可能性があります。[Microsoft Edge WebView2 公式](https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/) からランタイムを導入してください。
 - **NVIDIA GPU を積んでいるのに `実行デバイス: CPU` と表示される**
   - `requirements.txt` を後から実行した等で CPU版 `onnxruntime` が混入している可能性があります。[3.5 GPU環境とCPU環境についての補足・切り替え](#35-gpu環境とcpu環境についての補足切り替え) の再導入手順を実行してください。また NVIDIA ドライバーが古すぎないか（CUDA 13.0 対応か）もご確認ください。
 - **macOS で `rtmlib起動.command` をダブルクリックしても開けない**
   - `chmod +x rtmlib起動.command` を実行した後、Finder 上で **右クリック（Control＋クリック）→「開く」** を試してください。
-- **macOS で `--legacy` 起動時に Tkinter エラーが出る**
-  - Homebrew 版 Python 等で `tkinter` が入っていない場合は `brew install python-tk`（使用中の Python バージョンに合わせて `python-tk@3.14` 等）または [Python 公式インストーラー](https://www.python.org/downloads/) を使用してください（標準の PyWebView UI には Tkinter は不要です）。
 - **`_metadata.txt` の撮影日時が「取得不可」になる**
   - `exiftool` または `ffprobe` が未導入（または PATH が通っていない）状態です。[2.3 任意ツール](#23-任意ツール撮影日時の取得用) を参照してインストールしてください。
 - **ViTPose++ 初回実行時にモデル読み込みが進まない／エラーになる**

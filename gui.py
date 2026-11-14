@@ -2502,50 +2502,11 @@ def run_persistent_worker(initial_config: Path | None = None) -> None:
         cache.close()
 
 
-def _start_gui() -> None:
-    try:
-        from pose_ui import launch_gui
-    except ImportError as exc:
-        msg = (
-            f"GUI表示に必要なパッケージが見つかりません ({exc})。\n\n"
-            "新規環境では:\n"
-            "  python -m pip install -r requirements.txt\n\n"
-            "既存のGPU環境（.venv）に追加する場合は:\n"
-            "  python -m pip install customtkinter tkinterdnd2 Pillow\n"
-            "を実行してください。"
-        )
-        print(msg, file=sys.stderr, flush=True)
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("必要なパッケージが不足しています", msg)
-            root.destroy()
-        except Exception:
-            pass
-        sys.exit(1)
-
-    launch_gui(
-        base_dir=BASE_DIR,
-        settings_file=SETTINGS_FILE,
-        engine_defaults=ENGINE_DEFAULTS,
-        choices=CHOICES,
-        bool_keys=BOOL_KEYS,
-        int_keys=INT_KEYS,
-        float_keys=FLOAT_KEYS,
-        resolve_rtmlib_fn=resolve_rtmlib_selection,
-        output_names_fn=output_names,
-    )
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="動画姿勢推定 GUI / 解析ワーカー")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--persistent-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--legacy", action="store_true", help="従来版 CustomTkinter GUI を起動する")
     parser.add_argument("--debug", action="store_true", help="PyWebView デバッグモードを有効にする")
     parser.add_argument("--dev", action="store_true", help="Vite 開発サーバー (http://localhost:5173) に接続する")
     args = parser.parse_args()
@@ -2555,12 +2516,14 @@ if __name__ == "__main__":
         if args.config is None:
             parser.error("解析ワーカーには --config が必要です")
         run_analysis_worker(args.config)
-    elif args.legacy:
-        _start_gui()
     else:
         try:
             from pose_ui_webview import launch_webview_gui
         except ImportError as exc:
-            print(f"PyWebView GUIの起動に失敗しました: {exc}\n--legacy オプションで従来版GUIを起動できます。", file=sys.stderr)
+            print(
+                f"PyWebView GUIの起動に失敗しました: {exc}\n"
+                "必要なパッケージ（pywebview）がインストールされているか確認してください。",
+                file=sys.stderr,
+            )
             sys.exit(1)
         launch_webview_gui(debug=args.debug, dev_server=args.dev)
