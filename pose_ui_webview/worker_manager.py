@@ -47,6 +47,7 @@ class AnalysisWorkerManager:
         self._stop_requested = threading.Event()
         self._current_job_id: Optional[str] = None
         self._current_process: Optional[subprocess.Popen[str]] = None
+        self._persistent_mode: Optional[bool] = None
         self._tail_buffer: list[str] = []
         self._queue_thread: Optional[threading.Thread] = None
 
@@ -152,12 +153,14 @@ class AnalysisWorkerManager:
 
                 self._execute_single_job(job)
         finally:
+            self._shutdown_persistent_worker()
             with self._state_lock:
                 self._is_running = False
                 was_stopped = self._stop_requested.is_set()
                 self._stop_requested.clear()
                 self._current_job_id = None
                 self._current_process = None
+                self._persistent_mode = None
 
             self._push_queue_status(False, None)
             self._push_queue_update()
@@ -165,6 +168,98 @@ class AnalysisWorkerManager:
                 self._push_log("", "解析を中断しました。「解析開始」で先頭の動画から再開できます。\n")
             else:
                 self._push_log("", "すべての待機予約の解析が終了しました。\n")
+
+    def _shutdown_persistent_worker(self, timeout_sec: float = 3.0) -> None:
+        with self._state_lock:
+            proc = self._current_process
+            persistent = self._persistent_mode
+            self._current_process = None
+            self._persistent_mode = None
+        if proc is None:
+            return
+        try:
+            if persistent and proc.poll() is None and proc.stdin is not None:
+                try:
+                    proc.stdin.write("SHUTDOWN\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1.5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+            elif proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        except OSError:
+            pass
+        finally:
+            for stream in (proc.stdin, proc.stdout):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+
+    def _spawn_worker_process(self, config_path: Path) -> subprocess.Popen[str]:
+        cmd = [
+            sys.executable,
+            "-u",
+            "-X", "utf8",
+            str(self.base_dir / "gui.py"),
+            "--persistent-worker",
+            "--config",
+            str(config_path),
+        ]
+        return subprocess.Popen(
+            cmd,
+            cwd=str(self.base_dir),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+
+    @staticmethod
+    def _send_run_job(proc: subprocess.Popen[str], config_path: Path) -> None:
+        if proc.stdin is None:
+            raise OSError("Persistent worker stdin is unavailable")
+        proc.stdin.write(f"RUN_JOB:{config_path}\n")
+        proc.stdin.flush()
+
+    def _consume_worker_line(self, job_id: str, line: str, log_file) -> None:
+        log_file.write(line)
+        log_file.flush()
+
+        with self._state_lock:
+            self._tail_buffer.append(line)
+            self._tail_buffer = self._tail_buffer[-16:]
+
+        if line.startswith("PROGRESS:"):
+            parts = line.strip().split(":", 2)
+            if len(parts) == 3:
+                try:
+                    pct = float(parts[1])
+                    phase = parts[2].strip()
+                    self._push_progress(job_id, pct, phase)
+                    return
+                except ValueError:
+                    pass
+        self._push_log(job_id, line)
 
     def _execute_single_job(self, job: Reservation) -> None:
         with self._state_lock:
@@ -216,63 +311,66 @@ class AnalysisWorkerManager:
             self._push_queue_update()
             return
 
-        # Build worker command
-        cmd = [
-            sys.executable,
-            "-u",
-            "-X", "utf8",
-            str(self.base_dir / "gui.py"),
-            "--analysis-worker",
-            "--config",
-            str(config_path),
-        ]
+        with self._state_lock:
+            proc = self._current_process
+            persistent = self._persistent_mode
 
-        proc: Optional[subprocess.Popen[str]] = None
+        reused = (
+            proc is not None
+            and persistent is True
+            and proc.poll() is None
+            and proc.stdin is not None
+        )
+        if proc is not None and not reused:
+            self._shutdown_persistent_worker()
+            proc = None
+            persistent = None
+
         code = -1
+        job_done_received = False
         try:
             with open(log_path, "w", encoding="utf-8") as log_file:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.base_dir),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
-                with self._state_lock:
-                    self._current_process = proc
+                if proc is not None:
+                    try:
+                        self._send_run_job(proc, config_path)
+                    except OSError:
+                        self._shutdown_persistent_worker()
+                        proc = None
+                        persistent = None
+
+                if proc is None:
+                    proc = self._spawn_worker_process(config_path)
+                    persistent = None
+                    with self._state_lock:
+                        self._current_process = proc
+                        self._persistent_mode = None
 
                 if self._stop_requested.is_set() and proc.poll() is None:
                     proc.terminate()
 
                 assert proc.stdout is not None
-                for line in proc.stdout:
-                    log_file.write(line)
-                    log_file.flush()
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    stripped = line.strip()
+                    if persistent is None and stripped == "WORKER_READY":
+                        persistent = True
+                        with self._state_lock:
+                            self._persistent_mode = True
+                        self._send_run_job(proc, config_path)
+                        continue
+                    if persistent and stripped.startswith("JOB_DONE:"):
+                        try:
+                            code = int(stripped.split(":", 1)[1])
+                        except ValueError:
+                            code = 1
+                        job_done_received = True
+                        break
+                    self._consume_worker_line(job.id, line, log_file)
 
-                    with self._state_lock:
-                        self._tail_buffer.append(line)
-                        self._tail_buffer = self._tail_buffer[-16:]
-
-                    # Parse progress vs log
-                    if line.startswith("PROGRESS:"):
-                        parts = line.strip().split(":", 2)
-                        if len(parts) == 3:
-                            try:
-                                pct = float(parts[1])
-                                phase = parts[2].strip()
-                                self._push_progress(job.id, pct, phase)
-                                continue
-                            except ValueError:
-                                pass
-                    self._push_log(job.id, line)
-
-                code = proc.wait()
-                if proc.stdout is not None:
-                    proc.stdout.close()
+                if not job_done_received:
+                    code = proc.wait()
         except Exception as exc:
             logger.exception("Worker execution exception for job %s: %s", job.id, exc)
             if proc is not None and proc.poll() is None:
@@ -287,8 +385,17 @@ class AnalysisWorkerManager:
             self._push_log(job.id, f"起動/実行エラー: {exc}\n")
             code = -1
         finally:
-            with self._state_lock:
-                self._current_process = None
+            if not job_done_received or not persistent or proc is None or proc.poll() is not None:
+                if proc is not None:
+                    for stream in (proc.stdin, proc.stdout):
+                        if stream is not None:
+                            try:
+                                stream.close()
+                            except Exception:
+                                pass
+                with self._state_lock:
+                    self._current_process = None
+                    self._persistent_mode = None
 
         # Finalize job outcome
         self._finalize_job_state(job, code)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import csv
 from datetime import datetime
 import json
@@ -20,6 +21,7 @@ from pose_estimators import (
     configure_hf_environment,
     create_pose_estimator as _factory_create_pose_estimator,
     draw_pose_skeleton,
+    has_cached_vitpose_onnx,
     resolve_rtmlib_selection,
     resolve_vitpose_selection,
     validate_pose_settings,
@@ -1722,7 +1724,138 @@ def open_mp4v_writer(output_path: Path, fps: float, width: int, height: int):
     return writer, writer_fps
 
 
-def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
+def _reset_and_offload_yolo(detector) -> None:
+    """Clear Ultralytics predictor/tracker state and move model weights off GPU."""
+    if detector is None:
+        return
+    predictor = getattr(detector, "predictor", None)
+    if predictor is not None:
+        hook = getattr(predictor, "_hook", None)
+        if hook is not None:
+            try:
+                hook.remove()
+            except Exception:
+                pass
+            try:
+                predictor._hook = None
+            except Exception:
+                pass
+        if hasattr(predictor, "trackers"):
+            predictor.trackers = []
+        detector.predictor = None
+    if hasattr(detector, "to"):
+        detector.to("cpu")
+    _clear_cuda_cache()
+
+
+class WorkerModelCache:
+    """Persistently cache YOLO and Pose estimator instances across queued jobs."""
+
+    def __init__(self) -> None:
+        self._yolo_detector = None
+        self._yolo_key: str | None = None
+        self._pose_estimator: BasePoseEstimator | None = None
+        self._pose_key: tuple | None = None
+        self._pose_device: str | None = None
+
+    @staticmethod
+    def _build_pose_key(device: str) -> tuple:
+        settings = _active_pose_settings_from_globals()
+        return (tuple(sorted(settings.items())), str(device))
+
+    def has_cached_pose(self, device: str) -> bool:
+        if self._pose_estimator is None:
+            return False
+        return self._pose_key == self._build_pose_key(device)
+
+    def release_yolo(self) -> None:
+        if self._yolo_detector is not None:
+            _reset_and_offload_yolo(self._yolo_detector)
+            self._yolo_detector = None
+            self._yolo_key = None
+            _clear_cuda_cache()
+
+    def release_pose(self) -> None:
+        if self._pose_estimator is not None:
+            try:
+                self._pose_estimator.close()
+            finally:
+                self._pose_estimator = None
+                self._pose_key = None
+                self._pose_device = None
+                _clear_cuda_cache()
+
+    def prepare_for_yolo_pass(
+        self,
+        yolo_device: str,
+        yolo_model: str | Path,
+        yolo_imgsz: int,
+        yolo_batch_size: int = 16,
+    ) -> None:
+        """Ensure sufficient free VRAM before Pass 1 (YOLO) when caching CUDA pose models."""
+        if self._pose_estimator is None:
+            return
+        if not str(yolo_device).lower().startswith("cuda"):
+            return
+        if not str(self._pose_device or "").lower().startswith("cuda"):
+            return
+        mem_info = _get_cuda_free_total_gb(str(yolo_device))
+        model_factor = _yolo_model_vram_factor(str(yolo_model))
+        pixel_factor = (max(int(yolo_imgsz), 320) / 640.0) ** 2
+        batch = max(1, int(yolo_batch_size))
+        min_free_gb = max(2.0, 1.0 + batch * 0.070 * model_factor * pixel_factor + 0.6)
+        if mem_info is None or mem_info[0] < min_free_gb:
+            free_desc = f"{mem_info[0]:.1f} GB" if mem_info is not None else "unknown"
+            print(
+                "VRAM管理: Pass 1 (YOLO) の空きVRAM確保のためキャッシュ済み姿勢モデルを一時解放します "
+                f"(空きVRAM: {free_desc})",
+                flush=True,
+            )
+            self.release_pose()
+
+    def get_or_load_yolo(self, yolo_model: str | Path):
+        key = str(yolo_model)
+        if self._yolo_detector is not None and self._yolo_key == key:
+            _reset_and_offload_yolo(self._yolo_detector)
+            return self._yolo_detector
+        self.release_yolo()
+        detector = YOLO(yolo_model)
+        self._yolo_detector = detector
+        self._yolo_key = key
+        return detector
+
+    def finish_yolo_pass(self, detector) -> None:
+        _reset_and_offload_yolo(detector)
+
+    def get_or_create_pose_estimator(self, device: str) -> BasePoseEstimator:
+        key = self._build_pose_key(device)
+        if self._pose_estimator is not None and self._pose_key == key:
+            print(
+                f"姿勢モデル (キャッシュ再利用): {self._pose_estimator.display_name}",
+                flush=True,
+            )
+            return self._pose_estimator
+        self.release_pose()
+        estimator = create_pose_estimator_from_globals(device)
+        self._pose_estimator = estimator
+        self._pose_key = key
+        self._pose_device = str(device)
+        return estimator
+
+    def close(self) -> None:
+        try:
+            self.release_pose()
+        finally:
+            self.release_yolo()
+
+
+def run_yolo_pass(
+    input_video: Path,
+    progress_total_frames=0,
+    device="cpu",
+    model_cache: WorkerModelCache | None = None,
+    pose_device: str | None = None,
+):
     capture = cv2.VideoCapture(str(input_video))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
@@ -1732,7 +1865,11 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
     total_frames = progress_total_frames or int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
     configure_cuda_memory_fraction(device)
-    detector = YOLO(YOLO_MODEL)
+    detector = (
+        model_cache.get_or_load_yolo(YOLO_MODEL)
+        if model_cache is not None
+        else YOLO(YOLO_MODEL)
+    )
     effective_batch = resolve_effective_batch_size(YOLO_BATCH_SIZE, device, "YOLO")
     effective_batch = cap_yolo_batch_by_vram(
         effective_batch, device, YOLO_MODEL, YOLO_IMAGE_SIZE
@@ -1824,14 +1961,25 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
     reader = AsyncFrameReader(capture, max_queue_size=queue_depth)
     preimport_thread = None
     if normalize_pose_engine(globals().get("POSE_ENGINE")) == "vitpose":
-        from pose_estimators.vitpose import preimport_vitpose_dependencies
-
-        preimport_thread = threading.Thread(
-            target=preimport_vitpose_dependencies,
-            daemon=True,
-            name="ViTPosePreimport",
+        effective_pose_device = pose_device if pose_device is not None else device
+        pose_already_cached = (
+            model_cache is not None
+            and model_cache.has_cached_pose(effective_pose_device)
         )
-        preimport_thread.start()
+        onnx_already_cached = has_cached_vitpose_onnx(
+            str(globals().get("VITPOSE_MODEL", "h")),
+            str(globals().get("VITPOSE_INPUT_SIZE", "256x192")),
+            fp16=str(effective_pose_device).lower().startswith("cuda"),
+        )
+        if not pose_already_cached and not onnx_already_cached:
+            from pose_estimators.vitpose import preimport_vitpose_dependencies
+
+            preimport_thread = threading.Thread(
+                target=preimport_vitpose_dependencies,
+                daemon=True,
+                name="ViTPosePreimport",
+            )
+            preimport_thread.start()
     try:
         while True:
             batch_frames = reader.read_batch(effective_batch)
@@ -1845,8 +1993,11 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
             if preimport_thread is not None:
                 preimport_thread.join()
             capture.release()
-            del detector
-            _clear_cuda_cache()
+            if model_cache is not None:
+                model_cache.finish_yolo_pass(detector)
+            else:
+                del detector
+                _clear_cuda_cache()
     print(f"YOLO処理フレーム数: {processed_frames}（動画情報の値: {total_frames}）", flush=True)
     print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
@@ -1858,7 +2009,7 @@ def run_yolo_pass(input_video: Path, progress_total_frames=0, device="cpu"):
     return frame_detections, target_boxes, target_stable_id, width, height, fps
 
 
-def run_analysis() -> None:
+def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     import numpy as np
 
     pose_settings = _active_pose_settings_from_globals()
@@ -1901,16 +2052,35 @@ def run_analysis() -> None:
     )
 
     yolo_started_at = perf_counter()
-    _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
-        input_video,
-        metadata_total_frames,
-        device=yolo_device,
-    )
+    if model_cache is not None:
+        model_cache.prepare_for_yolo_pass(
+            yolo_device,
+            YOLO_MODEL,
+            YOLO_IMAGE_SIZE,
+            YOLO_BATCH_SIZE,
+        )
+        _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
+            input_video,
+            metadata_total_frames,
+            device=yolo_device,
+            model_cache=model_cache,
+            pose_device=pose_device,
+        )
+    else:
+        _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
+            input_video,
+            metadata_total_frames,
+            device=yolo_device,
+        )
     yolo_elapsed_seconds = perf_counter() - yolo_started_at
 
     # Pass 1 (YOLO) が解放された後にのみ Pass 2 の姿勢推定モデルをロードする（12GB VRAM競合防止）
     pose_init_started_at = perf_counter()
-    estimator = create_pose_estimator_from_globals(pose_device)
+    estimator = (
+        model_cache.get_or_create_pose_estimator(pose_device)
+        if model_cache is not None
+        else create_pose_estimator_from_globals(pose_device)
+    )
     pose_init_seconds = perf_counter() - pose_init_started_at
 
     try:
@@ -2137,11 +2307,7 @@ def run_analysis() -> None:
                                 if effective_pose_batch > 1:
                                     oom_occurred = False
                                     try:
-                                        fixed_bs = (
-                                            effective_pose_batch
-                                            if pose_engine == "rtmpose"
-                                            else None
-                                        )
+                                        fixed_bs = effective_pose_batch
                                         return estimator.infer_batch(
                                             items_chunk,
                                             fixed_batch_size=fixed_bs,
@@ -2214,8 +2380,13 @@ def run_analysis() -> None:
 
         pose_elapsed_seconds = pose_init_seconds + perf_counter() - pose_started_at
         print(f"PROGRESS:100:{phase_code}", flush=True)
+    except BaseException:
+        if model_cache is not None:
+            model_cache.release_pose()
+        raise
     finally:
-        estimator.close()
+        if model_cache is None:
+            estimator.close()
 
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
@@ -2233,8 +2404,8 @@ def run_analysis() -> None:
     print(f"{phase_label}分析速度: {pose_analysis_fps:.2f} フレーム/秒", flush=True)
 
 
-def run_analysis_worker(config_path: Path) -> None:
-    """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
+def _init_worker_environment() -> None:
+    """Initialize process-wide worker settings and reusable heavy modules once."""
     import importlib
     import os
     import warnings
@@ -2244,31 +2415,94 @@ def run_analysis_worker(config_path: Path) -> None:
     configure_hf_environment()
     warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
 
-    settings = normalize_legacy_rtmlib_settings(
-        json.loads(config_path.read_text(encoding="utf-8"))
-    )
-    unknown = set(settings) - set(ENGINE_DEFAULTS)
-    if unknown:
-        raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")
-    for key, value in settings.items():
-        if key in PATH_SETTING_KEYS:
-            value = Path(value).expanduser()
-        globals()[key] = value
-
-    globals()["cv2"] = importlib.import_module("cv2")
-    globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
-    if normalize_pose_engine(globals().get("POSE_ENGINE")) == "rtmpose":
-        rtmlib = importlib.import_module("rtmlib")
-        globals()["RTMPose"] = rtmlib.RTMPose
-        globals()["draw_skeleton"] = rtmlib.draw_skeleton
-    else:
+    if "cv2" not in globals():
+        globals()["cv2"] = importlib.import_module("cv2")
+    if "YOLO" not in globals():
+        globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
+    if "draw_skeleton" not in globals():
         try:
             rtmlib = importlib.import_module("rtmlib")
             globals()["draw_skeleton"] = rtmlib.draw_skeleton
         except ImportError:
             pass
 
+
+def _apply_worker_config(config_path: Path) -> None:
+    """Reset ENGINE_DEFAULTS globals completely, then apply config JSON overrides."""
+    import importlib
+
+    settings = normalize_legacy_rtmlib_settings(
+        json.loads(config_path.read_text(encoding="utf-8"))
+    )
+    unknown = set(settings) - set(ENGINE_DEFAULTS)
+    if unknown:
+        raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")
+
+    for key, default_val in ENGINE_DEFAULTS.items():
+        globals()[key] = deepcopy(default_val)
+
+    for key, value in settings.items():
+        if key in PATH_SETTING_KEYS and value is not None:
+            value = Path(value).expanduser()
+        globals()[key] = value
+
+    if "cv2" not in globals():
+        globals()["cv2"] = importlib.import_module("cv2")
+    if "YOLO" not in globals():
+        globals()["YOLO"] = importlib.import_module("ultralytics").YOLO
+    if normalize_pose_engine(globals().get("POSE_ENGINE")) == "rtmpose":
+        if "RTMPose" not in globals() or "draw_skeleton" not in globals():
+            rtmlib = importlib.import_module("rtmlib")
+            globals()["RTMPose"] = rtmlib.RTMPose
+            globals()["draw_skeleton"] = rtmlib.draw_skeleton
+    elif "draw_skeleton" not in globals():
+        try:
+            rtmlib = importlib.import_module("rtmlib")
+            globals()["draw_skeleton"] = rtmlib.draw_skeleton
+        except ImportError:
+            pass
+
+
+def run_analysis_worker(config_path: Path) -> None:
+    """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
+    _init_worker_environment()
+    _apply_worker_config(config_path)
     run_analysis()
+
+
+def run_persistent_worker(initial_config: Path | None = None) -> None:
+    """常駐ワーカーとして複数ジョブを連続処理するエントリーポイント。"""
+    del initial_config
+    _init_worker_environment()
+    cache = WorkerModelCache()
+    try:
+        print("WORKER_READY", flush=True)
+        while True:
+            raw_line = sys.stdin.readline()
+            if not raw_line:
+                break
+            command = raw_line.strip()
+            if not command:
+                continue
+            if command == "SHUTDOWN":
+                break
+            if command.startswith("RUN_JOB:"):
+                job_config_path = Path(command[len("RUN_JOB:") :].strip())
+                exit_code = 0
+                try:
+                    _apply_worker_config(job_config_path)
+                    run_analysis(model_cache=cache)
+                except Exception:
+                    import traceback
+
+                    traceback.print_exc(file=sys.stdout)
+                    sys.stdout.flush()
+                    exit_code = 1
+                print(f"JOB_DONE:{exit_code}", flush=True)
+            else:
+                print(f"Unknown persistent worker command: {command}", flush=True)
+    finally:
+        cache.close()
 
 
 def _start_gui() -> None:
@@ -2312,12 +2546,15 @@ def _start_gui() -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="動画姿勢推定 GUI / 解析ワーカー")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--persistent-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--legacy", action="store_true", help="従来版 CustomTkinter GUI を起動する")
     parser.add_argument("--debug", action="store_true", help="PyWebView デバッグモードを有効にする")
     parser.add_argument("--dev", action="store_true", help="Vite 開発サーバー (http://localhost:5173) に接続する")
     args = parser.parse_args()
-    if args.analysis_worker:
+    if args.persistent_worker:
+        run_persistent_worker(args.config)
+    elif args.analysis_worker:
         if args.config is None:
             parser.error("解析ワーカーには --config が必要です")
         run_analysis_worker(args.config)

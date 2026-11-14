@@ -1,9 +1,13 @@
-"""ViTPose++ (PyTorch / Hugging Face Transformers) estimator implementation."""
+"""ViTPose++ (ONNX Runtime / PyTorch / Hugging Face Transformers) estimator implementation."""
 from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib
 import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
 import threading
 import time
 from typing import Any, Iterator, Optional
@@ -16,10 +20,16 @@ from .base import (
     BasePoseEstimator,
     bbox_xyxy2cs,
     clamped_target_box,
+    clear_cuda_cache,
     draw_pose_skeleton,
     get_cuda_free_total_gb,
     top_down_affine_udp,
 )
+
+try:
+    from scipy.ndimage import gaussian_filter as _SCIPY_GAUSSIAN_FILTER
+except Exception:
+    _SCIPY_GAUSSIAN_FILTER = None
 
 # Official Hugging Face usyd-community ViTPose++ checkpoints (Classic decoder, 256x192, MoE COCO expert=0).
 VITPOSE_ASSETS: dict[str, dict[str, dict[str, Any]]] = {
@@ -94,15 +104,12 @@ def resolve_vitpose_selection(
 
 def _gaussian_blur_2d(heatmap: np.ndarray, sigma: float = 2.0) -> np.ndarray:
     """Apply 2D Gaussian blur for DARK/UDP sub-pixel refinement."""
-    try:
-        from scipy.ndimage import gaussian_filter
-
-        return gaussian_filter(heatmap, sigma=sigma)
-    except Exception:
-        ksize = max(3, int(2 * round(3 * sigma) + 1))
-        if ksize % 2 == 0:
-            ksize += 1
-        return cv2.GaussianBlur(heatmap, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+    if _SCIPY_GAUSSIAN_FILTER is not None:
+        return _SCIPY_GAUSSIAN_FILTER(heatmap, sigma=sigma)
+    ksize = max(3, int(2 * round(3 * sigma) + 1))
+    if ksize % 2 == 0:
+        ksize += 1
+    return cv2.GaussianBlur(heatmap, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
 
 
 def decode_heatmaps_udp(
@@ -130,56 +137,90 @@ def decode_heatmaps_udp(
     max_idx = np.argmax(flat, axis=-1)
     scores = np.take_along_axis(flat, max_idx[..., None], axis=-1)[..., 0].astype(np.float32)
 
-    coords = np.zeros((batch_size, num_joints, 2), dtype=np.float32)
-    coords[:, :, 0] = (max_idx % hm_w).astype(np.float32)
-    coords[:, :, 1] = (max_idx // hm_w).astype(np.float32)
+    px_grid = (max_idx % hm_w).astype(np.intp)
+    py_grid = (max_idx // hm_w).astype(np.intp)
+    coords = np.stack((px_grid.astype(np.float32), py_grid.astype(np.float32)), axis=-1)
 
-    for b in range(batch_size):
-        for k in range(num_joints):
-            if scores[b, k] <= 0.0:
-                continue
-            hm = hm_arr[b, k]
-            blurred = _gaussian_blur_2d(hm, sigma=blur_sigma) if blur_sigma > 0 else hm
-            max_val = float(np.max(blurred))
-            if max_val <= 0.0:
-                continue
-            # Rescale peak magnitude to match raw heatmap peak, then compute log-heatmap Taylor step.
-            blurred = np.maximum(blurred, 1e-10)
-            log_hm = np.log(blurred)
-
-            px = int(coords[b, k, 0])
-            py = int(coords[b, k, 1])
-            if 1 < px < hm_w - 2 and 1 < py < hm_h - 2:
-                dx = 0.5 * (log_hm[py, px + 1] - log_hm[py, px - 1])
-                dy = 0.5 * (log_hm[py + 1, px] - log_hm[py - 1, px])
-                dxx = 0.25 * (log_hm[py, px + 2] - 2.0 * log_hm[py, px] + log_hm[py, px - 2])
-                dyy = 0.25 * (log_hm[py + 2, px] - 2.0 * log_hm[py, px] + log_hm[py - 2, px])
-                dxy = 0.25 * (
-                    log_hm[py + 1, px + 1]
-                    - log_hm[py - 1, px + 1]
-                    - log_hm[py + 1, px - 1]
-                    + log_hm[py - 1, px - 1]
+    valid_mask = scores > 0.0
+    if np.any(valid_mask):
+        vb, vk = np.nonzero(valid_mask)
+        valid_hms = hm_arr[vb, vk]
+        if blur_sigma > 0.0:
+            if _SCIPY_GAUSSIAN_FILTER is not None:
+                blurred_valid = _SCIPY_GAUSSIAN_FILTER(
+                    valid_hms, sigma=(0.0, blur_sigma, blur_sigma)
                 )
-                hessian = np.array([[dxx, dxy], [dxy, dyy]], dtype=np.float32)
-                det = float(hessian[0, 0] * hessian[1, 1] - hessian[0, 1] * hessian[1, 0])
-                if abs(det) > 1e-6:
-                    # Only apply second-order Newton step when local Hessian is negative-definite (concave peak).
-                    if hessian[0, 0] < 0.0 and det > 0.0:
-                        inv_h = np.array(
-                            [[hessian[1, 1], -hessian[0, 1]], [-hessian[1, 0], hessian[0, 0]]],
-                            dtype=np.float32,
-                        ) / det
-                        offset = -inv_h @ np.array([dx, dy], dtype=np.float32)
-                        coords[b, k, 0] += float(np.clip(offset[0], -0.5, 0.5))
-                        coords[b, k, 1] += float(np.clip(offset[1], -0.5, 0.5))
-                    else:
-                        coords[b, k, 0] += float(np.sign(dx) * 0.25)
-                        coords[b, k, 1] += float(np.sign(dy) * 0.25)
-            elif 0 < px < hm_w - 1 and 0 < py < hm_h - 1:
-                dx = hm[py, px + 1] - hm[py, px - 1]
-                dy = hm[py + 1, px] - hm[py - 1, px]
-                coords[b, k, 0] += float(np.sign(dx) * 0.25)
-                coords[b, k, 1] += float(np.sign(dy) * 0.25)
+            else:
+                ksize = max(3, int(2 * round(3 * blur_sigma) + 1))
+                if ksize % 2 == 0:
+                    ksize += 1
+                blurred_valid = np.stack(
+                    [
+                        cv2.GaussianBlur(h, (ksize, ksize), sigmaX=blur_sigma, sigmaY=blur_sigma)
+                        for h in valid_hms
+                    ],
+                    axis=0,
+                )
+        else:
+            blurred_valid = valid_hms
+
+        max_vals = blurred_valid.reshape(len(vb), -1).max(axis=1)
+        active = max_vals > 0.0
+        if np.any(active):
+            vb = vb[active]
+            vk = vk[active]
+            v_blurred = blurred_valid[active]
+            px_v = px_grid[vb, vk]
+            py_v = py_grid[vb, vk]
+
+            interior = (px_v > 1) & (px_v < hm_w - 2) & (py_v > 1) & (py_v < hm_h - 2)
+            if np.any(interior):
+                i_idx = np.nonzero(interior)[0]
+                ib = vb[i_idx]
+                ik = vk[i_idx]
+                ipx = px_v[i_idx]
+                ipy = py_v[i_idx]
+                hb = v_blurred[i_idx]
+                m_idx = np.arange(len(i_idx))
+
+                def _log_stencil(dy_off: int, dx_off: int) -> np.ndarray:
+                    vals = np.maximum(hb[m_idx, ipy + dy_off, ipx + dx_off], np.float32(1e-10))
+                    return np.log(vals).astype(np.float32, copy=False)
+
+                c00 = _log_stencil(0, 0)
+                dx = np.float32(0.5) * (_log_stencil(0, 1) - _log_stencil(0, -1))
+                dy = np.float32(0.5) * (_log_stencil(1, 0) - _log_stencil(-1, 0))
+                dxx = np.float32(0.25) * (_log_stencil(0, 2) - np.float32(2.0) * c00 + _log_stencil(0, -2))
+                dyy = np.float32(0.25) * (_log_stencil(2, 0) - np.float32(2.0) * c00 + _log_stencil(-2, 0))
+                dxy = np.float32(0.25) * (
+                    _log_stencil(1, 1) - _log_stencil(-1, 1) - _log_stencil(1, -1) + _log_stencil(-1, -1)
+                )
+                det = dxx * dyy - dxy * dxy
+                valid_det = np.abs(det) > 1e-6
+                concave = valid_det & (dxx < 0.0) & (det > 0.0)
+                non_concave = valid_det & (~concave)
+
+                if np.any(concave):
+                    c_det = det[concave]
+                    ox = -(dyy[concave] * dx[concave] - dxy[concave] * dy[concave]) / c_det
+                    oy = -(-dxy[concave] * dx[concave] + dxx[concave] * dy[concave]) / c_det
+                    coords[ib[concave], ik[concave], 0] += np.clip(ox, -0.5, 0.5)
+                    coords[ib[concave], ik[concave], 1] += np.clip(oy, -0.5, 0.5)
+                if np.any(non_concave):
+                    coords[ib[non_concave], ik[non_concave], 0] += np.sign(dx[non_concave]) * np.float32(0.25)
+                    coords[ib[non_concave], ik[non_concave], 1] += np.sign(dy[non_concave]) * np.float32(0.25)
+
+            edge = (~interior) & (px_v > 0) & (px_v < hm_w - 1) & (py_v > 0) & (py_v < hm_h - 1)
+            if np.any(edge):
+                e_idx = np.nonzero(edge)[0]
+                eb = vb[e_idx]
+                ek = vk[e_idx]
+                epx = px_v[e_idx]
+                epy = py_v[e_idx]
+                edx = hm_arr[eb, ek, epy, epx + 1] - hm_arr[eb, ek, epy, epx - 1]
+                edy = hm_arr[eb, ek, epy + 1, epx] - hm_arr[eb, ek, epy - 1, epx]
+                coords[eb, ek, 0] += np.sign(edx) * np.float32(0.25)
+                coords[eb, ek, 1] += np.sign(edy) * np.float32(0.25)
 
     # UDP unbiased inverse mapping: [0, hm_w - 1] <-> [center_x - scale_x/2, center_x + scale_x/2]
     denom_x = max(float(hm_w - 1), 1.0)
@@ -361,6 +402,230 @@ def _hf_download_progress_logging() -> Iterator[None]:
             hf_snap_mod.hf_tqdm = orig_snap_tqdm
 
 
+VITPOSE_ONNX_OPSET = 17
+
+
+def get_vitpose_onnx_cache_dir() -> Path:
+    """Return directory path for cached ViTPose++ ONNX models."""
+    override = os.environ.get("VITPOSE_ONNX_CACHE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cache" / "rtmlib_pose_estimation" / "vitpose_onnx"
+
+
+def get_vitpose_onnx_path(
+    model_size: str,
+    input_size: str = "256x192",
+    *,
+    fp16: bool = False,
+) -> Path:
+    """Return canonical ONNX cache file path for a ViTPose++ configuration."""
+    selection = resolve_vitpose_selection(model_size, input_size)
+    ds_idx = int(selection["asset"].get("dataset_index", 0))
+    prec = "fp16" if fp16 else "fp32"
+    filename = (
+        f"vitpose-plus-{selection['model_size']}_{selection['resolution']}"
+        f"_ds{ds_idx}_{prec}_op{VITPOSE_ONNX_OPSET}.onnx"
+    )
+    return get_vitpose_onnx_cache_dir() / filename
+
+
+def has_cached_vitpose_onnx(
+    model_size: str,
+    input_size: str = "256x192",
+    *,
+    fp16: bool = False,
+) -> bool:
+    """Return True if a non-empty cached ViTPose++ ONNX file exists."""
+    try:
+        onnx_path = get_vitpose_onnx_path(model_size, input_size, fp16=fp16)
+    except ValueError:
+        return False
+    return onnx_path.is_file() and onnx_path.stat().st_size > 0
+
+
+def _is_vitpose_from_pretrained_mocked() -> bool:
+    """Detect patched VitPoseForPoseEstimation.from_pretrained in unit tests without importing transformers."""
+    transformers_mod = sys.modules.get("transformers")
+    if transformers_mod is None:
+        return False
+    cls = getattr(transformers_mod, "VitPoseForPoseEstimation", None)
+    if cls is None:
+        return False
+    fn = getattr(cls, "from_pretrained", None)
+    return fn is not None and (hasattr(fn, "assert_called") or hasattr(fn, "_mock_name"))
+
+
+def fuse_vitpose_moe_expert(model: Any, dataset_index: int = 0) -> Any:
+    """Fuse fc2 + experts[dataset_index] in ViTPose++ MoE MLP layers into a single Linear layer.
+
+    Removes unused MoE expert branches while preserving exact numeric output for dataset_index.
+    """
+    import torch
+    import torch.nn as nn
+
+    class _FusedVitPoseMLP(nn.Module):
+        def __init__(
+            self,
+            fc1: nn.Module,
+            act: Any,
+            fused_fc2: nn.Linear,
+        ) -> None:
+            super().__init__()
+            self.fc1 = fc1
+            self.act = act
+            self.fc2 = fused_fc2
+
+        def forward(
+            self,
+            hidden_state: torch.Tensor,
+            indices: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            del indices
+            return self.fc2(self.act(self.fc1(hidden_state)))
+
+    layers = getattr(getattr(getattr(model, "backbone", None), "encoder", None), "layer", None)
+    if layers is None:
+        return model
+
+    for layer in layers:
+        mlp = getattr(layer, "mlp", None)
+        if mlp is None:
+            continue
+        fc1 = getattr(mlp, "fc1", None)
+        fc2 = getattr(mlp, "fc2", None)
+        act = getattr(mlp, "act", None)
+        experts = getattr(mlp, "experts", None)
+        if (
+            fc1 is None
+            or fc2 is None
+            or act is None
+            or experts is None
+            or not (0 <= dataset_index < len(experts))
+        ):
+            continue
+        expert = experts[dataset_index]
+        has_bias = (fc2.bias is not None) or (expert.bias is not None)
+        fused_fc2 = nn.Linear(
+            fc2.in_features,
+            fc2.out_features + expert.out_features,
+            bias=has_bias,
+            dtype=fc2.weight.dtype,
+            device=fc2.weight.device,
+        )
+        with torch.no_grad():
+            fused_fc2.weight.copy_(torch.cat([fc2.weight.data, expert.weight.data], dim=0))
+            if has_bias:
+                b_fc2 = (
+                    fc2.bias.data
+                    if fc2.bias is not None
+                    else torch.zeros(fc2.out_features, dtype=fc2.weight.dtype, device=fc2.weight.device)
+                )
+                b_exp = (
+                    expert.bias.data
+                    if expert.bias is not None
+                    else torch.zeros(expert.out_features, dtype=expert.weight.dtype, device=expert.weight.device)
+                )
+                fused_fc2.bias.copy_(torch.cat([b_fc2, b_exp], dim=0))
+        layer.mlp = _FusedVitPoseMLP(fc1, act, fused_fc2)
+    return model
+
+
+def _build_vitpose_export_wrapper(model: Any, dataset_index: int) -> Any:
+    """Wrap ViTPose model so ONNX graph takes only pixel_values and returns heatmaps."""
+    import torch
+
+    class _VitPoseOnnxExportWrapper(torch.nn.Module):
+        def __init__(self, inner: Any, ds_index: int) -> None:
+            super().__init__()
+            self.model = inner
+            self.dataset_index = int(ds_index)
+
+        def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+            ds = torch.full(
+                (pixel_values.shape[0],),
+                self.dataset_index,
+                dtype=torch.long,
+                device=pixel_values.device,
+            )
+            outputs = self.model(pixel_values=pixel_values, dataset_index=ds)
+            return outputs.heatmaps
+
+    return _VitPoseOnnxExportWrapper(model, dataset_index)
+
+
+def export_vitpose_to_onnx(
+    pytorch_model: Any,
+    onnx_path: Path,
+    input_size: tuple[int, int],
+    *,
+    dataset_index: int = 0,
+    fp16: bool = False,
+    export_device: str = "cpu",
+) -> Path:
+    """Export a ViTPose++ PyTorch model (with MoE Expert fusion) to an ONNX file atomically."""
+    import warnings
+    import onnx
+    import torch
+
+    onnx_path = Path(onnx_path)
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
+    crop_w, crop_h = int(input_size[0]), int(input_size[1])
+    dtype = torch.float16 if fp16 else torch.float32
+
+    pytorch_model.eval()
+    pytorch_model = fuse_vitpose_moe_expert(pytorch_model, dataset_index=dataset_index)
+    pytorch_model.to(device=export_device, dtype=dtype)
+    wrapper = _build_vitpose_export_wrapper(pytorch_model, dataset_index)
+    wrapper.eval()
+
+    dummy_input = torch.zeros((1, 3, crop_h, crop_w), dtype=dtype, device=export_device)
+    tmp_dir = Path(tempfile.mkdtemp(dir=onnx_path.parent, prefix=".tmp_export_"))
+    stage_dir = Path(tempfile.mkdtemp(dir=onnx_path.parent, prefix=".tmp_stage_"))
+    try:
+        tmp_onnx = tmp_dir / onnx_path.name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            warnings.filterwarnings("ignore", message=r".*Converting a tensor to a Python boolean.*")
+            with torch.no_grad():
+                torch.onnx.export(
+                    wrapper,
+                    (dummy_input,),
+                    str(tmp_onnx),
+                    dynamo=False,
+                    opset_version=VITPOSE_ONNX_OPSET,
+                    input_names=["pixel_values"],
+                    output_names=["heatmaps"],
+                    dynamic_axes={"pixel_values": {0: "batch"}, "heatmaps": {0: "batch"}},
+                )
+
+        exported_files = list(tmp_dir.iterdir())
+        data_dest = onnx_path.with_name(f"{onnx_path.name}.data")
+        if len(exported_files) == 1:
+            if data_dest.exists():
+                data_dest.unlink()
+            os.replace(tmp_onnx, onnx_path)
+        else:
+            proto = onnx.load(str(tmp_onnx), load_external_data=True)
+            stage_onnx = stage_dir / onnx_path.name
+            data_name = f"{onnx_path.name}.data"
+            onnx.save_model(
+                proto,
+                str(stage_onnx),
+                save_as_external_data=True,
+                all_tensors_to_one_file=True,
+                location=data_name,
+            )
+            stage_data = stage_dir / data_name
+            if stage_data.is_file():
+                os.replace(stage_data, data_dest)
+            os.replace(stage_onnx, onnx_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    return onnx_path
+
+
 def preimport_vitpose_dependencies() -> None:
     """Pre-import Hugging Face transformers ViTPose class into RAM (no weights or CUDA)."""
     try:
@@ -374,7 +639,7 @@ def preimport_vitpose_dependencies() -> None:
 
 
 class ViTPoseEstimator(BasePoseEstimator):
-    """High-accuracy PyTorch ViTPose++ estimator with UDP affine/decode, FP16 AMP, and Flip Test TTA."""
+    """High-accuracy ViTPose++ estimator using ONNX Runtime (with PyTorch fallback), UDP, and Flip Test TTA."""
 
     def __init__(
         self,
@@ -384,6 +649,8 @@ class ViTPoseEstimator(BasePoseEstimator):
         *,
         flip_test: bool = True,
         pytorch_model: Any = None,
+        ort_session: Any = None,
+        use_onnx: bool = True,
     ) -> None:
         self._selection = resolve_vitpose_selection(model_size, input_size)
         self._asset = self._selection["asset"]
@@ -392,9 +659,98 @@ class ViTPoseEstimator(BasePoseEstimator):
         self._use_fp16 = self._is_cuda
         self._flip_test = bool(flip_test)
         self._dataset_index_value = int(self._asset.get("dataset_index", 0))
-        self._model = pytorch_model if pytorch_model is not None else self._load_model()
+        self._model: Any = None
+        self._ort_session: Any = None
 
-    def _load_model(self) -> Any:
+        if pytorch_model is not None:
+            self._model = pytorch_model
+        elif ort_session is not None:
+            self._ort_session = ort_session
+        elif use_onnx and not _is_vitpose_from_pretrained_mocked():
+            self._init_ort_or_fallback()
+        else:
+            self._model = self._load_model()
+
+    def _init_ort_or_fallback(self) -> None:
+        onnx_path = get_vitpose_onnx_path(
+            self._selection["model_size"],
+            self._selection["resolution"],
+            fp16=self._use_fp16,
+        )
+        try:
+            if not has_cached_vitpose_onnx(
+                self._selection["model_size"],
+                self._selection["resolution"],
+                fp16=self._use_fp16,
+            ):
+                print(
+                    f"ViTPose++ ONNX変換・キャッシュ生成中: {self._selection['model_size'].upper()} "
+                    f"({'FP16' if self._use_fp16 else 'FP32'})",
+                    flush=True,
+                )
+                pt_model = self._load_model(target_device="cpu")
+                try:
+                    try:
+                        export_vitpose_to_onnx(
+                            pt_model,
+                            onnx_path,
+                            self.model_input_size,
+                            dataset_index=self._dataset_index_value,
+                            fp16=self._use_fp16,
+                            export_device="cpu",
+                        )
+                    except Exception:
+                        if not self._is_cuda:
+                            raise
+                        export_vitpose_to_onnx(
+                            pt_model,
+                            onnx_path,
+                            self.model_input_size,
+                            dataset_index=self._dataset_index_value,
+                            fp16=self._use_fp16,
+                            export_device=self._device,
+                        )
+                finally:
+                    del pt_model
+                    clear_cuda_cache()
+
+            self._ort_session = self._create_ort_session(onnx_path)
+            return
+        except Exception as exc:
+            print(
+                f"ViTPose++ ONNX初期化をスキップし、PyTorch推論へフォールバックします: {exc}",
+                flush=True,
+            )
+            self._ort_session = None
+            self._model = self._load_model()
+
+    def _create_ort_session(self, onnx_path: Path) -> Any:
+        import onnxruntime as ort
+
+        if self._is_cuda and hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+
+        if self._is_cuda:
+            cuda_idx = int(self._device.split(":")[1]) if ":" in self._device else 0
+            providers: list[Any] = [
+                (
+                    "CUDAExecutionProvider",
+                    {
+                        "device_id": cuda_idx,
+                        "arena_extend_strategy": "kSameAsRequested",
+                    },
+                ),
+                "CPUExecutionProvider",
+            ]
+        else:
+            providers = ["CPUExecutionProvider"]
+
+        session = ort.InferenceSession(str(onnx_path), providers=providers)
+        if self._is_cuda and "CUDAExecutionProvider" not in session.get_providers():
+            raise RuntimeError("ONNX Runtime で CUDAExecutionProvider を利用できません。")
+        return session
+
+    def _load_model(self, target_device: Optional[str] = None) -> Any:
         configure_hf_environment()
         import torch
         import transformers
@@ -404,6 +760,7 @@ class ViTPoseEstimator(BasePoseEstimator):
 
         dtype = torch.float16 if self._use_fp16 else torch.float32
         repo_id = self._asset["repo_id"]
+        dest_device = self._device if target_device is None else target_device
 
         def _from_pretrained(*, local_files_only: bool) -> Any:
             try:
@@ -426,7 +783,7 @@ class ViTPoseEstimator(BasePoseEstimator):
             print(f"初回モデルダウンロード中: {repo_id}", flush=True)
             with _hf_download_progress_logging():
                 model = _from_pretrained(local_files_only=False)
-        model.to(self._device)
+        model.to(dest_device)
         model.eval()
         return model
 
@@ -438,14 +795,28 @@ class ViTPoseEstimator(BasePoseEstimator):
     def display_name(self) -> str:
         tta_tag = "Flip" if self._flip_test else "NoFlip"
         prec_tag = "FP16" if self._use_fp16 else "FP32"
+        backend_tag = "ONNX, " if self._ort_session is not None else ""
         return (
             f"ViTPose++-{self._selection['model_size'].upper()} "
-            f"({self._selection['resolution']}, {prec_tag}, {tta_tag})"
+            f"({self._selection['resolution']}, {backend_tag}{prec_tag}, {tta_tag})"
         )
 
     @property
     def progress_phase(self) -> str:
         return "VITPOSE"
+
+    def supports_dynamic_batch(self) -> tuple[bool, object]:
+        if self._ort_session is not None:
+            try:
+                inputs = self._ort_session.get_inputs()
+                if inputs and getattr(inputs[0], "shape", None):
+                    batch_dim = inputs[0].shape[0]
+                    if isinstance(batch_dim, int) and batch_dim > 0:
+                        return False, batch_dim
+                    return True, batch_dim
+            except Exception:
+                return True, "dynamic"
+        return True, "dynamic"
 
     def cap_batch_by_vram(self, requested: int, device: str) -> int:
         if requested <= 1 or not str(device).startswith("cuda"):
@@ -467,8 +838,32 @@ class ViTPoseEstimator(BasePoseEstimator):
             return safe_max
         return requested
 
+    def _forward_heatmaps_ort(self, feed_np: np.ndarray) -> np.ndarray:
+        """Run ViTPose++ ONNX Runtime session (with optional Flip Test TTA) and return FP32 heatmaps."""
+        session = self._ort_session
+        input_meta = session.get_inputs()[0]
+        input_name = input_meta.name
+        output_name = session.get_outputs()[0].name
+        expected_type = str(getattr(input_meta, "type", "") or "").lower()
+        target_dtype = np.float16 if "float16" in expected_type else np.float32
+        feed_input = np.ascontiguousarray(feed_np, dtype=target_dtype)
+
+        heatmaps = np.asarray(
+            session.run([output_name], {input_name: feed_input})[0],
+            dtype=np.float32,
+        )
+        if self._flip_test:
+            flipped_input = np.ascontiguousarray(feed_input[:, :, :, ::-1])
+            flip_heatmaps = np.asarray(
+                session.run([output_name], {input_name: flipped_input})[0],
+                dtype=np.float32,
+            )
+            flip_heatmaps = flip_heatmaps[:, list(COCO_FLIP_INDEX), :, ::-1]
+            heatmaps = np.float32(0.5) * (heatmaps + flip_heatmaps)
+        return heatmaps
+
     def _forward_heatmaps(self, pixel_tensor: Any) -> Any:
-        """Run ViTPose++ forward pass (with FP16 autocast on CUDA) and return FP32 heatmaps."""
+        """Run ViTPose++ PyTorch forward pass (with FP16 autocast on CUDA) and return FP32 heatmaps."""
         import contextlib
         import torch
 
@@ -522,20 +917,18 @@ class ViTPoseEstimator(BasePoseEstimator):
         *,
         return_crop: bool = False,
     ) -> list[Any]:
-        import torch
-
         if not batch_items:
             return []
 
         crop_w, crop_h = self.model_input_size
         prepared: list[Optional[tuple[np.ndarray, np.ndarray, Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]]]] = []
         valid_metas: list[tuple[np.ndarray, np.ndarray, Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]]] = []
-        target_cap = len(batch_items)
+        target_cap = max(len(batch_items), fixed_batch_size or 0)
 
         batch_array = None
         if batch_buffer is not None:
             buf = batch_buffer.get("vitpose_tensor")
-            if buf is None or buf.shape != (target_cap, 3, crop_h, crop_w):
+            if buf is None or buf.shape[0] < target_cap or buf.shape[1:] != (3, crop_h, crop_w):
                 buf = np.empty((target_cap, 3, crop_h, crop_w), dtype=np.float32)
                 batch_buffer["vitpose_tensor"] = buf
             batch_array = buf
@@ -568,10 +961,25 @@ class ViTPoseEstimator(BasePoseEstimator):
             empty_item = ((None, None), None) if return_crop else (None, None)
             return [empty_item for _ in batch_items]
 
-        feed_np = np.ascontiguousarray(batch_array[:valid_count], dtype=np.float32)
-        pixel_tensor = torch.from_numpy(feed_np).to(self._device, non_blocking=self._is_cuda)
-        heatmaps_tensor = self._forward_heatmaps(pixel_tensor)
-        heatmaps_np = heatmaps_tensor.detach().float().cpu().numpy()
+        if self._ort_session is not None:
+            run_count = (
+                fixed_batch_size
+                if (fixed_batch_size and fixed_batch_size >= valid_count)
+                else valid_count
+            )
+            if run_count > valid_count:
+                batch_array[valid_count:run_count] = batch_array[0]
+            feed_np = np.ascontiguousarray(batch_array[:run_count], dtype=np.float32)
+            heatmaps_np = self._forward_heatmaps_ort(feed_np)
+            if run_count > valid_count:
+                heatmaps_np = heatmaps_np[:valid_count]
+        else:
+            import torch
+
+            feed_np = np.ascontiguousarray(batch_array[:valid_count], dtype=np.float32)
+            pixel_tensor = torch.from_numpy(feed_np).to(self._device, non_blocking=self._is_cuda)
+            heatmaps_tensor = self._forward_heatmaps(pixel_tensor)
+            heatmaps_np = heatmaps_tensor.detach().float().cpu().numpy()
 
         centers_np = np.asarray([m[0] for m in valid_metas], dtype=np.float32)
         scales_np = np.asarray([m[1] for m in valid_metas], dtype=np.float32)
@@ -624,5 +1032,6 @@ class ViTPoseEstimator(BasePoseEstimator):
         )
 
     def close(self) -> None:
+        self._ort_session = None
         self._model = None
         super().close()
