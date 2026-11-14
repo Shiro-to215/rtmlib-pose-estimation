@@ -2254,9 +2254,6 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                         print(f"PROGRESS:{progress}:{phase_code}", flush=True)
                         last_progress = progress
 
-                if frame_count % 30 == 0:
-                    print(f"Processed {frame_count} frames", flush=True)
-
             try:
                 print(f"PROGRESS:50:{phase_code}", flush=True)
                 next_read_idx = 0
