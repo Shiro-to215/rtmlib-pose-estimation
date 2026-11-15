@@ -40,6 +40,8 @@ JOB_SCOPED_SETTING_KEYS: frozenset[str] = frozenset({
     "OUTPUT_CROP_SKELETON_VIDEO_NAME",
     "OUTPUT_CSV_NAME",
     "OUTPUT_METADATA_NAME",
+    "OUTPUT_METADATA_JSON_NAME",
+    "OUTPUT_NPZ_NAME",
 })
 
 # Keys that must never be overwritten via update_job_settings() payload dict
@@ -54,6 +56,8 @@ IMMUTABLE_JOB_SETTING_KEYS: frozenset[str] = frozenset({
     "OUTPUT_CROP_SKELETON_VIDEO_NAME",
     "OUTPUT_CSV_NAME",
     "OUTPUT_METADATA_NAME",
+    "OUTPUT_METADATA_JSON_NAME",
+    "OUTPUT_NPZ_NAME",
 })
 
 
@@ -195,11 +199,28 @@ class BackendApi:
         self._is_processing = False
         self._current_job_id: Optional[str] = None
 
-        # In-memory thumbnail caches
+        # In-memory thumbnail caches & allowed video path whitelist
         self._thumbnails: dict[str, str] = {}
         self._thumb_info: dict[str, str] = {}
+        self._allowed_video_paths: set[str] = set()
         self._last_video_dir: str = ""
         self._last_output_dir: str = ""
+
+    @staticmethod
+    def _normalize_video_key(path: str | Path) -> str:
+        try:
+            return os.path.normcase(str(Path(path).expanduser().resolve()))
+        except Exception:
+            return os.path.normcase(str(path))
+
+    def register_allowed_videos(self, paths: Sequence[str | Path]) -> None:
+        """Adds user-selected or dropped video paths to the preview whitelist."""
+        if not paths:
+            return
+        with self._lock:
+            for p in paths:
+                if p:
+                    self._allowed_video_paths.add(self._normalize_video_key(p))
 
     def set_window(self, window: webview.Window) -> None:
         """Attaches the PyWebView Window instance to the bridge."""
@@ -236,7 +257,7 @@ class BackendApi:
     def get_initial_data(self) -> dict[str, Any]:
         """Handshake payload returning current queue, settings, choices, and system metadata."""
         with self._lock:
-            queue_data = [self.serialize_job(job) for job in self.reservations.jobs]
+            queue_data = [self.serialize_job(job) for job in self.reservations.snapshot_jobs()]
             choices_data = {k: list(v) for k, v in self.choices.items()}
             labels_data = deepcopy(getattr(gui, "LABELS", {}))
             groups_data = [
@@ -291,6 +312,7 @@ class BackendApi:
             resolved = [str(Path(p).resolve()) for p in res]
             if resolved:
                 self._last_video_dir = str(Path(resolved[0]).parent)
+                self.register_allowed_videos(resolved)
             return resolved
         except Exception as exc:
             logger.warning("select_video_files dialog error: %s", exc)
@@ -385,11 +407,17 @@ class BackendApi:
                 custom_destination=custom_dest,
             )
 
+            for job in created:
+                self._allowed_video_paths.add(self._normalize_video_key(job.video))
+
             # Trigger background thumbnail generation
             if self.thumbnail_provider and hasattr(self.thumbnail_provider, "enqueue_jobs"):
                 self.thumbnail_provider.enqueue_jobs(created)
 
-            return [self.serialize_job(job) for job in created]
+            result = [self.serialize_job(job) for job in created]
+
+        self._push_queue_update()
+        return result
 
     def remove_jobs(self, job_ids: list[str]) -> list[dict[str, Any]]:
         """Removes non-running jobs by ID and returns the updated queue."""
@@ -402,13 +430,15 @@ class BackendApi:
 
             self.reservations.remove(to_remove)
             if self.thumbnail_provider and hasattr(self.thumbnail_provider, "prune"):
-                self.thumbnail_provider.prune({j.id for j in self.reservations.jobs})
+                self.thumbnail_provider.prune({j.id for j in self.reservations.snapshot_jobs()})
             for jid in to_remove:
                 self._thumbnails.pop(jid, None)
                 self._thumb_info.pop(jid, None)
 
-            self._push_queue_update()
-            return [self.serialize_job(j) for j in self.reservations.jobs]
+            result = [self.serialize_job(j) for j in self.reservations.snapshot_jobs()]
+
+        self._push_queue_update()
+        return result
 
     def move_job(self, job_id: str, direction: str | int) -> list[dict[str, Any]]:
         """Moves a job up or down in the pending queue and returns updated list."""
@@ -423,8 +453,19 @@ class BackendApi:
                 raise ValueError("移動方向は上または下を指定してください")
 
             self.reservations.move(job_id, delta)
-            self._push_queue_update()
-            return [self.serialize_job(j) for j in self.reservations.jobs]
+            result = [self.serialize_job(j) for j in self.reservations.snapshot_jobs()]
+
+        self._push_queue_update()
+        return result
+
+    def reorder_job(self, job_id: str, target_index: int) -> list[dict[str, Any]]:
+        """Moves a pending/failed job directly to target_index in the visible queue."""
+        with self._lock:
+            self.reservations.reorder_job(job_id, target_index)
+            result = [self.serialize_job(j) for j in self.reservations.snapshot_jobs()]
+
+        self._push_queue_update()
+        return result
 
     def update_job_settings(
         self,
@@ -469,15 +510,19 @@ class BackendApi:
                 output_names=self._output_names_fn,
                 reset_failed=reset_failed,
             )
-            self._push_queue_update()
-            return self.serialize_job(updated)
+            result = self.serialize_job(updated)
+
+        self._push_queue_update()
+        return result
 
     def retry_job(self, job_id: str) -> list[dict[str, Any]]:
         """Resets failed job to pending and returns the updated queue."""
         with self._lock:
             self.reservations.retry([job_id], self._output_names_fn)
-            self._push_queue_update()
-            return [self.serialize_job(j) for j in self.reservations.jobs]
+            result = [self.serialize_job(j) for j in self.reservations.snapshot_jobs()]
+
+        self._push_queue_update()
+        return result
 
     # ---- 9. Settings Persistence Endpoint ------------------------------------
 
@@ -504,8 +549,7 @@ class BackendApi:
             self.default_settings.pop("OUTPUT_DIRECTORY", None)
             write_json(self.settings_file, self.default_settings)
 
-            self.reservations.output_root = resolved_root
-            self.reservations.save()
+            self.reservations.set_output_root(resolved_root)
 
             return deepcopy(self.default_settings)
 
@@ -528,19 +572,20 @@ class BackendApi:
     def cancel_current_job(self) -> dict[str, Any]:
         """Interrupts currently running job and stops queue execution."""
         with self._lock:
-            if self.worker_manager:
-                return self.worker_manager.cancel_current_job()
-
-            if not self.is_processing:
-                return {"status": "idle"}
-            self._is_processing = False
-            job_id = self._current_job_id or ""
-            return {"status": "stopping", "job_id": job_id}
+            wm = self.worker_manager
+            if wm is None:
+                if not self.is_processing:
+                    return {"status": "idle"}
+                self._is_processing = False
+                job_id = self._current_job_id or ""
+                return {"status": "stopping", "job_id": job_id}
+        return wm.cancel_current_job()
 
     # ---- 12-14. Thumbnail & Preview Decoders ---------------------------------
 
     def get_job_thumbnail(self, job_id: str) -> str:
-        """Returns base64 JPEG data URI for specified job ID."""
+        """Returns base64 JPEG data URI for specified job ID (extracts outside lock)."""
+        video_path: Optional[str] = None
         with self._lock:
             if self.thumbnail_provider and hasattr(self.thumbnail_provider, "get_thumbnail"):
                 thumb = self.thumbnail_provider.get_thumbnail(job_id)
@@ -551,26 +596,39 @@ class BackendApi:
 
             job = self.reservations.find(job_id)
             if job and job.video.is_file():
-                thumb, info = self._extract_thumbnail_sync(str(job.video))
-                if thumb:
-                    self._thumbnails[job_id] = thumb
-                    self._thumb_info[job_id] = info
-                    return thumb
+                video_path = str(job.video)
+
+        if not video_path:
             return ""
+
+        thumb, info = self._extract_thumbnail_sync(video_path)
+        if thumb:
+            with self._lock:
+                self._thumbnails[job_id] = thumb
+                self._thumb_info[job_id] = info
+        return thumb
 
     def get_preview_frame(
         self, video_path_or_job_id: str, frame_idx_or_time: int | float = 0
     ) -> str:
-        """Extracts high-resolution frame for monitor preview pane."""
+        """Extracts high-resolution frame ONLY for whitelisted session/registered videos."""
         if not video_path_or_job_id or not isinstance(video_path_or_job_id, (str, Path)):
             return ""
         video_str = str(video_path_or_job_id)
         target_path: Optional[str] = None
-        job = self.reservations.find(video_str)
-        if job and job.video.is_file():
-            target_path = str(job.video)
-        elif os.path.exists(video_str):
-            target_path = video_str
+
+        with self._lock:
+            job = self.reservations.find(video_str)
+            if job and job.video.is_file():
+                target_path = str(job.video)
+            else:
+                candidate_key = self._normalize_video_key(video_str)
+                registered_keys = {
+                    self._normalize_video_key(j.video)
+                    for j in self.reservations.snapshot_jobs()
+                }
+                if candidate_key in self._allowed_video_paths or candidate_key in registered_keys:
+                    target_path = video_str
 
         if not target_path or not os.path.exists(target_path):
             return ""
@@ -609,7 +667,7 @@ class BackendApi:
         return _validate_pose_settings(settings)
 
     def get_output_preview_names(self, folder_path: str) -> dict[str, str]:
-        """Returns the 5 standard output filenames for destination folder preview."""
+        """Returns the 7 standard output filenames for destination folder preview."""
         if not folder_path or not isinstance(folder_path, (str, Path)):
             return {}
         p = Path(folder_path)
@@ -623,6 +681,8 @@ class BackendApi:
                     "OUTPUT_CROP_SKELETON_VIDEO_NAME": f"{p.name}-crop-skeleton.mp4",
                     "OUTPUT_CSV_NAME": f"{p.name}.csv",
                     "OUTPUT_METADATA_NAME": f"{p.name}_metadata.txt",
+                    "OUTPUT_METADATA_JSON_NAME": f"{p.name}_metadata.json",
+                    "OUTPUT_NPZ_NAME": f"{p.name}.npz",
                 }
             return self._output_names_fn(p)
         except (ValueError, OSError):
@@ -677,6 +737,10 @@ class BackendApi:
         if "VITPOSE_INPUT_SIZE" in sanitized:
             sanitized["VITPOSE_INPUT_SIZE"] = str(sanitized["VITPOSE_INPUT_SIZE"] or "256x192").strip().lower()
 
+        if "VITPOSE_PRECISION" in sanitized:
+            prec = str(sanitized["VITPOSE_PRECISION"] or "fp16").strip().lower()
+            sanitized["VITPOSE_PRECISION"] = prec if prec in ("fp16", "fp32") else "fp16"
+
         # Float keys
         for k in self.float_keys:
             if k in sanitized and sanitized[k] is not None and sanitized[k] != "":
@@ -685,28 +749,34 @@ class BackendApi:
                 except (ValueError, TypeError):
                     pass
 
-        # Special handling: YOLO_TRACK_ID
-        if "YOLO_TRACK_ID" in sanitized:
-            tid = sanitized["YOLO_TRACK_ID"]
-            if tid in (None, "", "None", "null"):
-                sanitized["YOLO_TRACK_ID"] = None
-            else:
-                try:
-                    sanitized["YOLO_TRACK_ID"] = int(tid)
-                except (ValueError, TypeError):
-                    sanitized["YOLO_TRACK_ID"] = None
+        # Nullable float keys (CAPTURE_FPS: empty/auto -> None, else positive finite float)
+        nullable_float_keys = set(getattr(gui, "NULLABLE_FLOAT_KEYS", {"CAPTURE_FPS"}))
+        for k in nullable_float_keys:
+            if k in sanitized:
+                raw_val = sanitized[k]
+                if raw_val in (None, "", "None", "null", "auto"):
+                    sanitized[k] = None
+                else:
+                    try:
+                        parsed = float(raw_val)
+                        import math as _math
+                        sanitized[k] = parsed if (_math.isfinite(parsed) and parsed > 0) else None
+                    except (ValueError, TypeError):
+                        sanitized[k] = None
 
         # Special handling: YOLO_CLASSES
         if "YOLO_CLASSES" in sanitized:
             classes = sanitized["YOLO_CLASSES"]
             if isinstance(classes, str):
                 parts = [p.strip() for p in classes.split(",") if p.strip()]
-                sanitized["YOLO_CLASSES"] = [int(p) for p in parts if p.isdigit()]
+                sanitized["YOLO_CLASSES"] = [int(p) for p in parts if p.isdigit() and int(p) >= 0]
             elif isinstance(classes, (list, tuple)):
                 coerced = []
                 for p in classes:
                     try:
-                        coerced.append(int(p))
+                        val = int(p)
+                        if val >= 0:
+                            coerced.append(val)
                     except (ValueError, TypeError):
                         pass
                 sanitized["YOLO_CLASSES"] = coerced
@@ -753,14 +823,18 @@ class BackendApi:
         return gui.normalize_legacy_rtmlib_settings(clean_defaults)
 
     def _push_queue_update(self) -> None:
-        """Pushes queue snapshot update event to webview window."""
-        if self._window is None:
-            return
-        jobs_payload = [self.serialize_job(j) for j in self.reservations.jobs]
+        """Pushes queue snapshot update event to webview window outside locks."""
+        with self._lock:
+            window = self._window
+            if window is None:
+                return
+            jobs_payload = [self.serialize_job(j) for j in self.reservations.snapshot_jobs()]
+            active_id = self.current_job_id
+            queue_active = self.is_processing
         payload = {
             "jobs": jobs_payload,
-            "active_job_id": self.current_job_id,
-            "queue_active": self.is_processing,
+            "active_job_id": active_id,
+            "queue_active": queue_active,
         }
         escaped_payload = json.dumps(payload, ensure_ascii=False)
         escaped_jobs = json.dumps(jobs_payload, ensure_ascii=False)
@@ -776,7 +850,7 @@ class BackendApi:
             f"}}));"
         )
         try:
-            self._window.evaluate_js(js)
+            window.evaluate_js(js)
         except Exception:
             pass
 

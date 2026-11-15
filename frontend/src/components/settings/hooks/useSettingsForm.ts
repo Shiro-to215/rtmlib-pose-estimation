@@ -36,6 +36,9 @@ export function useSettingsForm(
       if (Array.isArray(v1) && Array.isArray(v2)) {
         return JSON.stringify(v1) !== JSON.stringify(v2);
       }
+      if ((v1 === null || v1 === undefined) && (v2 === null || v2 === undefined)) {
+        return false;
+      }
       return v1 !== v2;
     });
   }, [values, initialSnapshot]);
@@ -48,8 +51,12 @@ export function useSettingsForm(
     if ((key === 'YOLO_CONFIDENCE' || key === 'YOLO_IOU') && (val < 0.01 || val > 1.0)) {
       return '0.01 〜 1.00 の範囲で指定してください。';
     }
-    if (key === 'CSV_MAX_PERSONS' && (val < 1 || val > 20)) {
-      return '最大人数は 1 〜 20 の範囲で指定してください。';
+    if (key === 'CAPTURE_FPS') {
+      if (val !== null && val !== undefined && val !== '') {
+        if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0) {
+          return '撮影フレームレートは 0 より大きい数値で指定してください。';
+        }
+      }
     }
     if (
       (key === 'YOLO_BATCH_SIZE' || key === 'RTMPOSE_BATCH_SIZE') &&
@@ -64,7 +71,13 @@ export function useSettingsForm(
       return 'ViTPose++ のバッチサイズは 1 〜 8 の整数で指定してください。';
     }
     if (key === 'YOLO_CLASSES') {
-      if (!Array.isArray(val) || val.length === 0) return '検出対象クラスIDを1つ以上入力してください。';
+      if (
+        !Array.isArray(val) ||
+        val.length === 0 ||
+        val.some((n) => !Number.isInteger(n) || n < 0)
+      ) {
+        return '検出対象クラスIDは0以上の整数を1つ以上入力してください。';
+      }
     }
     return null;
   };
@@ -76,6 +89,7 @@ export function useSettingsForm(
       if (poseEngine === 'vitpose') {
         const vitModel = String(values['VITPOSE_MODEL'] || 'h').toLowerCase();
         const vitInput = String(values['VITPOSE_INPUT_SIZE'] || '256x192').toLowerCase();
+        const vitPrecision = String(values['VITPOSE_PRECISION'] || 'fp16').toLowerCase();
         if (!['s', 'b', 'l', 'h'].includes(vitModel) || vitInput !== '256x192') {
           setRtmlibWarning('ViTPose++ は S/B/L/H かつ 256x192 のみ対応しています。');
           return;
@@ -87,6 +101,7 @@ export function useSettingsForm(
               POSE_ENGINE: 'vitpose',
               VITPOSE_MODEL: vitModel,
               VITPOSE_INPUT_SIZE: vitInput,
+              VITPOSE_PRECISION: vitPrecision,
             });
             if (!res.valid) {
               setRtmlibWarning(res.error || '無効なViTPose++設定です');
@@ -136,6 +151,7 @@ export function useSettingsForm(
     values['RTMLIB_POSE_INPUT_SIZE'],
     values['VITPOSE_MODEL'],
     values['VITPOSE_INPUT_SIZE'],
+    values['VITPOSE_PRECISION'],
   ]);
 
   const setFieldValue = (k: string, v: any) => {

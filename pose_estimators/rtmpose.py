@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import re
 from typing import Any, Optional
 
@@ -10,10 +11,14 @@ import numpy as np
 
 from .base import (
     BasePoseEstimator,
+    bbox_xyxy2cs,
     clamped_target_box,
     draw_pose_skeleton,
     get_cuda_free_total_gb,
+    top_down_affine_udp,
 )
+
+logger = logging.getLogger(__name__)
 
 RTMLIB_POSE_ASSETS = {
     "t": {
@@ -74,20 +79,20 @@ def resolve_rtmlib_selection(pose_model: str, pose_input_size: str) -> dict[str,
 
 
 def _ensure_pose_preprocess_ready(pose_model: Any) -> None:
-    """Convert mean/std once so concurrent or repeated preprocess calls avoid re-allocation."""
-    if getattr(pose_model, "mean", None) is not None and not isinstance(
-        pose_model.mean, np.ndarray
+    """Convert mean/std once to float32 so preprocess calls avoid repeated casting."""
+    if getattr(pose_model, "mean", None) is not None and not (
+        isinstance(pose_model.mean, np.ndarray) and pose_model.mean.dtype == np.float32
     ):
-        pose_model.mean = np.array(pose_model.mean)
-    if getattr(pose_model, "std", None) is not None and not isinstance(
-        pose_model.std, np.ndarray
+        pose_model.mean = np.asarray(pose_model.mean, dtype=np.float32)
+    if getattr(pose_model, "std", None) is not None and not (
+        isinstance(pose_model.std, np.ndarray) and pose_model.std.dtype == np.float32
     ):
-        pose_model.std = np.array(pose_model.std)
+        pose_model.std = np.asarray(pose_model.std, dtype=np.float32)
 
 
 def _write_chw_float32_into(preprocessed_img: Any, dest: np.ndarray) -> None:
-    """Copy rtmlib RTMPose.preprocess output directly into a pre-allocated (3, H, W) float32 slice."""
-    arr = np.asarray(preprocessed_img)
+    """Copy preprocessed image directly into a pre-allocated (3, H, W) float32 slice."""
+    arr = np.asarray(preprocessed_img, dtype=np.float32)
     if arr.ndim == 4 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.ndim == 3 and arr.shape[2] == 3:
@@ -99,7 +104,7 @@ def _write_chw_float32_into(preprocessed_img: Any, dest: np.ndarray) -> None:
 
 
 def _extract_single_pose(keypoints: Any, scores: Any):
-    """Extract 1-person (keypoints, scores) arrays from rtmlib RTMPose output."""
+    """Extract 1-person (keypoints, scores) arrays from RTMPose output."""
     if keypoints is None or scores is None or len(keypoints) == 0:
         return None, None
     kpts_arr = np.asarray(keypoints, dtype=np.float32)
@@ -114,19 +119,52 @@ def _extract_single_pose(keypoints: Any, scores: Any):
 
 
 def _prepare_pose_crop(pose_model: Any, frame: np.ndarray, clamped_box: list[float]):
-    """Affine-crop frame for RTMPose and return (preprocessed, crop_bgr, center, scale)."""
-    from rtmlib.tools.pose_estimation.rtmpose import bbox_xyxy2cs, top_down_affine
-
+    """UDP affine-crop frame and return float32 RGB normalized (preprocessed, crop_bgr, center, scale)."""
     _ensure_pose_preprocess_ready(pose_model)
     center, scale = bbox_xyxy2cs(np.asarray(clamped_box, dtype=np.float32), padding=1.25)
-    crop_bgr, scale = top_down_affine(pose_model.model_input_size, scale, center, frame)
-    preprocessed = crop_bgr
-    if (
-        getattr(pose_model, "mean", None) is not None
-        and getattr(pose_model, "std", None) is not None
-    ):
-        preprocessed = (crop_bgr - pose_model.mean) / pose_model.std
+    input_size = tuple(map(int, pose_model.model_input_size))
+    crop_bgr, scale = top_down_affine_udp(input_size, scale, center, frame)
+    crop_rgb = crop_bgr[:, :, ::-1].astype(np.float32)
+    preprocessed = crop_rgb
+    mean = getattr(pose_model, "mean", None)
+    std = getattr(pose_model, "std", None)
+    if mean is not None and std is not None:
+        preprocessed = (crop_rgb - mean) / std
     return preprocessed, crop_bgr, center, scale
+
+
+def _decode_simcc_udp(
+    simcc_x: np.ndarray,
+    simcc_y: np.ndarray,
+    centers: np.ndarray,
+    scales: np.ndarray,
+    model_input_size: tuple[int, int],
+    simcc_split_ratio: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decode batched (B, K, Wx)/(B, K, Wy) SimCC outputs using UDP coordinates."""
+    sx = np.asarray(simcc_x, dtype=np.float32)
+    sy = np.asarray(simcc_y, dtype=np.float32)
+    if sx.ndim != 3 or sy.ndim != 3:
+        raise ValueError(f"Expected 3D SimCC outputs, got {sx.shape} and {sy.shape}")
+
+    x_locs = np.argmax(sx, axis=2)
+    y_locs = np.argmax(sy, axis=2)
+    max_val_x = np.take_along_axis(sx, x_locs[..., None], axis=2)[..., 0]
+    max_val_y = np.take_along_axis(sy, y_locs[..., None], axis=2)[..., 0]
+    scores = (0.5 * (max_val_x + max_val_y)).astype(np.float32)
+
+    locs = np.stack((x_locs, y_locs), axis=-1).astype(np.float32)
+    invalid = scores <= 0.0
+    if np.any(invalid):
+        locs[invalid] = -1.0
+
+    crop_kpts = locs / np.float32(simcc_split_ratio)
+    crop_w, crop_h = int(model_input_size[0]), int(model_input_size[1])
+    udp_span = np.array([max(crop_w - 1, 1), max(crop_h - 1, 1)], dtype=np.float32)
+    centers_arr = np.asarray(centers, dtype=np.float32).reshape(-1, 1, 2)
+    scales_arr = np.asarray(scales, dtype=np.float32).reshape(-1, 1, 2)
+    restored = (crop_kpts / udp_span - 0.5) * scales_arr + centers_arr
+    return restored.astype(np.float32), scores
 
 
 class RTMPoseEstimator(BasePoseEstimator):
@@ -177,7 +215,10 @@ class RTMPoseEstimator(BasePoseEstimator):
 
     @property
     def model_input_size(self) -> tuple[int, int]:
-        w, h = map(int, getattr(self._model, "model_input_size", self._selection["pose_asset"]["input_size"]))
+        raw_size = getattr(self._model, "model_input_size", None)
+        if raw_size is None:
+            raw_size = self._selection["pose_asset"]["input_size"]
+        w, h = map(int, raw_size)
         return (w, h)
 
     @property
@@ -224,6 +265,16 @@ class RTMPoseEstimator(BasePoseEstimator):
             return safe_max
         return requested
 
+    def _run_model_inference(self, preprocessed: np.ndarray) -> tuple[Any, bool]:
+        session = getattr(self._model, "session", None)
+        if session is not None:
+            input_name = session.get_inputs()[0].name
+            output_names = [out.name for out in session.get_outputs()]
+            chw = np.empty((1, 3, *self.model_input_size[::-1]), dtype=np.float32)
+            _write_chw_float32_into(preprocessed, chw[0])
+            return session.run(output_names, {input_name: chw}), True
+        return self._model.inference(preprocessed), False
+
     def infer_single(
         self,
         frame: np.ndarray,
@@ -235,16 +286,34 @@ class RTMPoseEstimator(BasePoseEstimator):
         clamped = clamped_target_box(target_box, width, height)
         if clamped is None:
             return ((None, None), None) if return_crop else (None, None)
+        preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
+            self._model, frame, clamped
+        )
+        raw_outputs, _ = self._run_model_inference(preprocessed)
+        kpts_arr = scores_arr = None
+        if isinstance(raw_outputs, (list, tuple)) and len(raw_outputs) == 2:
+            try:
+                split_ratio = float(getattr(self._model, "simcc_split_ratio", 2.0))
+                kpts_batch, scores_batch = _decode_simcc_udp(
+                    raw_outputs[0],
+                    raw_outputs[1],
+                    np.asarray([center], dtype=np.float32),
+                    np.asarray([scale], dtype=np.float32),
+                    self.model_input_size,
+                    simcc_split_ratio=split_ratio,
+                )
+                kpts_arr, scores_arr = kpts_batch, scores_batch
+            except Exception as exc:
+                logger.warning(
+                    "RTMPose UDP single postprocess fallback triggered due to unexpected output: %s",
+                    exc,
+                )
+        if kpts_arr is None:
+            kpts_arr, scores_arr = self._model.postprocess(raw_outputs, center, scale)
+        kpts, scs = _extract_single_pose(kpts_arr, scores_arr)
         if return_crop:
-            preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
-                self._model, frame, clamped
-            )
-            outputs = self._model.inference(preprocessed)
-            keypoints, scores = self._model.postprocess(outputs, center, scale)
-            kpts, scs = _extract_single_pose(keypoints, scores)
             return (kpts, scs), (crop_bgr, center, scale)
-        keypoints, scores = self._model(frame, bboxes=[clamped])
-        return _extract_single_pose(keypoints, scores)
+        return (kpts, scs)
 
     def infer_batch(
         self,
@@ -287,15 +356,11 @@ class RTMPoseEstimator(BasePoseEstimator):
             if clamped is None:
                 prepared.append(None)
                 continue
-            if return_crop:
-                preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
-                    self._model, frame, clamped
-                )
-                crop_info = (crop_bgr, center, scale)
-            else:
-                preprocessed, center, scale = self._model.preprocess(frame, clamped)
-                crop_info = None
-            arr = np.asarray(preprocessed)
+            preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
+                self._model, frame, clamped
+            )
+            crop_info = (crop_bgr, center, scale) if return_crop else None
+            arr = np.asarray(preprocessed, dtype=np.float32)
             if arr.ndim == 4 and arr.shape[0] == 1:
                 arr = arr[0]
             if arr.ndim == 3 and arr.shape[2] == 3:
@@ -331,20 +396,41 @@ class RTMPoseEstimator(BasePoseEstimator):
             raw_outputs = [out[:valid_count] for out in raw_outputs]
 
         valid_results = None
-        if len(raw_outputs) == 2 and valid_count > 1:
+        if len(raw_outputs) == 2:
             try:
-                centers = np.asarray([m[0] for m in valid_metas])[:, None, :]
-                scales = np.asarray([m[1] for m in valid_metas])[:, None, :]
-                kpts_batch, scores_batch = self._model.postprocess(raw_outputs, centers, scales)
-                kpts_arr = np.asarray(kpts_batch, dtype=np.float32)
-                scores_arr = np.asarray(scores_batch, dtype=np.float32)
+                centers = np.asarray([m[0] for m in valid_metas], dtype=np.float32)
+                scales = np.asarray([m[1] for m in valid_metas], dtype=np.float32)
+                split_ratio = float(getattr(self._model, "simcc_split_ratio", 2.0))
+                kpts_arr, scores_arr = _decode_simcc_udp(
+                    raw_outputs[0],
+                    raw_outputs[1],
+                    centers,
+                    scales,
+                    self.model_input_size,
+                    simcc_split_ratio=split_ratio,
+                )
                 if kpts_arr.ndim == 3 and kpts_arr.shape[0] == valid_count:
                     valid_results = [
                         ([(float(pt[0]), float(pt[1])) for pt in kpts_arr[i]], scores_arr[i])
                         for i in range(valid_count)
                     ]
-            except Exception:
+                else:
+                    logger.warning(
+                        "RTMPose batch UDP decode returned shape %s for %d items; falling back to per-item postprocess",
+                        kpts_arr.shape,
+                        valid_count,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "RTMPose batch UDP postprocess failed (%s); falling back to per-item postprocess",
+                    exc,
+                )
                 valid_results = None
+        else:
+            logger.warning(
+                "RTMPose batch expected 2 SimCC outputs, got %d; falling back to per-item postprocess",
+                len(raw_outputs),
+            )
 
         if valid_results is None:
             valid_results = []
@@ -374,6 +460,8 @@ class RTMPoseEstimator(BasePoseEstimator):
         center: Any,
         scale: Any,
         keypoint_threshold: float = 0.45,
+        skeleton_line_width: int = 2,
+        keypoint_radius: int = 4,
     ) -> Optional[np.ndarray]:
         if crop_bgr is None:
             return None
@@ -382,18 +470,20 @@ class RTMPoseEstimator(BasePoseEstimator):
             return annotated
         scale_arr = np.asarray(scale, dtype=np.float32)
         center_arr = np.asarray(center, dtype=np.float32)
-        size_arr = np.asarray(self.model_input_size, dtype=np.float32)
+        crop_w, crop_h = self.model_input_size
+        udp_span = np.array([max(crop_w - 1, 1), max(crop_h - 1, 1)], dtype=np.float32)
         safe_scale = np.where(scale_arr == 0, 1.0, scale_arr)
         crop_kpts = (
-            (np.asarray(restored_keypoints, dtype=np.float32) - (center_arr - scale_arr / 2.0))
-            / safe_scale
-            * size_arr
+            ((np.asarray(restored_keypoints, dtype=np.float32) - center_arr) / safe_scale + 0.5)
+            * udp_span
         )
         return draw_pose_skeleton(
             annotated,
             crop_kpts[None, :, :],
             np.asarray([pose_scores], dtype=np.float32),
             kpt_thr=keypoint_threshold,
+            skeleton_line_width=skeleton_line_width,
+            keypoint_radius=keypoint_radius,
         )
 
     def close(self) -> None:

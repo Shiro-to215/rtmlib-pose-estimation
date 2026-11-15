@@ -47,6 +47,7 @@ class AnalysisWorkerManager:
         self._stop_requested = threading.Event()
         self._current_job_id: Optional[str] = None
         self._current_process: Optional[subprocess.Popen[str]] = None
+        self._current_cancel_file: Optional[Path] = None
         self._persistent_mode: Optional[bool] = None
         self._tail_buffer: list[str] = []
         self._queue_thread: Optional[threading.Thread] = None
@@ -87,9 +88,57 @@ class AnalysisWorkerManager:
             self._queue_thread.start()
             return {"status": "started", "job_id": pending.id}
 
+    DEFAULT_CANCEL_GRACE_SEC = 1.5
+
+    def _escalate_cancel(
+        self,
+        proc: subprocess.Popen[str],
+        grace_sec: float = DEFAULT_CANCEL_GRACE_SEC,
+    ) -> None:
+        """Wait briefly for cooperative cancel before terminating/killing the exact proc."""
+        try:
+            proc.wait(timeout=grace_sec)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            return
+
+        with self._state_lock:
+            is_same_proc = self._current_process is proc
+        if not is_same_proc or proc.poll() is not None:
+            return
+
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError:
+            return
+
+        with self._state_lock:
+            is_same_proc = self._current_process is proc
+        if is_same_proc and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def _start_cancel_watcher(self, proc: Optional[subprocess.Popen[str]]) -> None:
+        if proc is not None and proc.poll() is None:
+            watcher = threading.Thread(
+                target=self._escalate_cancel,
+                args=(proc, self.DEFAULT_CANCEL_GRACE_SEC),
+                daemon=True,
+                name="CancelEscalationWatcher",
+            )
+            watcher.start()
+
     def cancel_current_job(self) -> dict[str, Any]:
-        """Gracefully interrupts the currently running worker subprocess,
-        marks the job as pending at the front of the queue, and stops queue execution.
+        """Cooperatively interrupts the currently running worker subprocess,
+        escalating to terminate/kill only if the same process does not exit in time.
         """
         with self._state_lock:
             if not self._is_running:
@@ -97,47 +146,64 @@ class AnalysisWorkerManager:
             self._stop_requested.set()
             proc = self._current_process
             job_id = self._current_job_id or ""
+            cancel_file = self._current_cancel_file
+
+        # Signal cooperative cancellation via per-job flag file first
+        if cancel_file is not None:
+            try:
+                cancel_file.parent.mkdir(parents=True, exist_ok=True)
+                cancel_file.write_text("cancel\n", encoding="utf-8")
+            except OSError:
+                pass
 
         # Emit stopping notifications
         self._push_progress(job_id, 0.0, "STOPPING")
         self._push_log(job_id, "解析を中断しています。現在の動画を待機リストの先頭へ戻します…\n")
 
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+        self._start_cancel_watcher(proc)
 
         return {"status": "stopping", "job_id": job_id}
 
     def shutdown(self, timeout_sec: float = 3.0) -> None:
         """Terminates any running subprocess and cleans up background threads on app exit."""
         self.cancel_current_job()
-        proc = self._current_process
+        with self._state_lock:
+            proc = self._current_process
+            thread = self._queue_thread
+
         if proc is not None and proc.poll() is None:
             try:
                 proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                with self._state_lock:
+                    still_same = self._current_process is proc
+                if still_same and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proc.kill()
+                            proc.wait()
+                        except OSError:
+                            pass
+                    except OSError:
+                        pass
             except OSError:
                 pass
 
-        thread = self._queue_thread
         if thread is not None and thread.is_alive() and threading.current_thread() != thread:
             thread.join(timeout=timeout_sec)
 
-        # Ensure active job is safely reverted to pending
-        with self._state_lock:
-            if self._current_job_id:
-                job = self.reservations.find(self._current_job_id)
-                if job and job.state == "running":
-                    job.state, job.error = "pending", ""
-                    self.reservations.prioritize_pending(job.id)
-                    try:
-                        self.reservations.save()
-                    except Exception:
-                        pass
+        # Fallback revert ONLY if worker loop has already exited cleanly
+        if thread is None or not thread.is_alive():
+            with self._state_lock:
+                job_id = self._current_job_id
+            if job_id:
+                try:
+                    self.reservations.revert_job_pending(job_id, prioritize=True)
+                except Exception:
+                    pass
 
     # ---- Internal Queue Loop & Worker Execution ------------------------------
 
@@ -268,33 +334,37 @@ class AnalysisWorkerManager:
 
         # Validate input video existence
         if not job.video.is_file():
-            job.state, job.error = "failed", f"入力動画が見つかりません: {job.video}"
-            self.reservations.save()
+            self.reservations.mark_job_failed(job.id, f"入力動画が見つかりません: {job.video}")
             self._push_log(job.id, f"エラー ({job.video.name}): 入力動画が見つかりません\n")
             self._push_finished(job.id, -1)
             self._push_queue_update()
             return
 
-        # Collision avoidance for output destination
-        if job.output.exists():
-            safe_dest = self.reservations.ensure_available_destination(job.output, exclude_id=job.id)
-            set_output(job.settings, safe_dest, self._output_names_fn)
-
-        # Write config JSON
+        # Write config JSON + reset per-job cooperative cancel flag file
         config_dir = self.base_dir / ".analysis_jobs" / "configs"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / f"{job.id}.json"
+        cancel_file = config_path.with_suffix(".cancel")
+        try:
+            if cancel_file.exists():
+                cancel_file.unlink()
+        except OSError:
+            pass
+
+        with self._state_lock:
+            self._current_cancel_file = cancel_file
+
+        # Update state (including destination collision check) to running atomically
+        self.reservations.mark_job_running(job.id, output_names=self._output_names_fn)
+
         clean_settings = {k: v for k, v in job.settings.items() if k in set(getattr(gui, "ENGINE_DEFAULTS", {}))}
+        clean_settings["__CANCEL_FLAG_FILE__"] = str(cancel_file)
         write_json(config_path, clean_settings)
 
         # Ensure logs directory
         log_dir = self.base_dir / ".analysis_jobs" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{job.id}.log"
-
-        # Update state to running
-        job.state, job.error = "running", ""
-        self.reservations.save()
 
         # Telemetry: announce job start
         self._push_started(job.id, job.video.name, str(job.output))
@@ -304,9 +374,9 @@ class AnalysisWorkerManager:
 
         # Check cancellation before launching process
         if self._stop_requested.is_set():
-            job.state, job.error = "pending", ""
-            self.reservations.prioritize_pending(job.id)
-            self.reservations.save()
+            self.reservations.revert_job_pending(job.id, prioritize=True)
+            with self._state_lock:
+                self._current_cancel_file = None
             self._push_finished(job.id, -1)
             self._push_queue_update()
             return
@@ -346,7 +416,11 @@ class AnalysisWorkerManager:
                         self._persistent_mode = None
 
                 if self._stop_requested.is_set() and proc.poll() is None:
-                    proc.terminate()
+                    try:
+                        cancel_file.write_text("cancel\n", encoding="utf-8")
+                    except OSError:
+                        pass
+                    self._start_cancel_watcher(proc)
 
                 assert proc.stdout is not None
                 while True:
@@ -385,6 +459,13 @@ class AnalysisWorkerManager:
             self._push_log(job.id, f"起動/実行エラー: {exc}\n")
             code = -1
         finally:
+            with self._state_lock:
+                self._current_cancel_file = None
+            try:
+                if cancel_file.exists():
+                    cancel_file.unlink()
+            except OSError:
+                pass
             if not job_done_received or not persistent or proc is None or proc.poll() is not None:
                 if proc is not None:
                     for stream in (proc.stdin, proc.stdout):
@@ -406,20 +487,18 @@ class AnalysisWorkerManager:
             was_stopped = self._stop_requested.is_set()
 
         if exit_code == 0:
-            job.state, job.error = "done", ""
+            self.reservations.mark_job_done(job.id)
             self._push_progress(job.id, 100.0, "完了")
             self._push_log(job.id, f"--- 解析完了: {job.video.name} ---\n")
         elif was_stopped:
-            job.state, job.error = "pending", ""
-            self.reservations.prioritize_pending(job.id)
+            self.reservations.revert_job_pending(job.id, prioritize=True)
             self._push_log(job.id, f"--- 中断: {job.video.name} を予約リストの先頭へ戻しました ---\n")
         else:
-            job.state = "failed"
             tail_text = "".join(tail_lines)[-2000:].strip()
-            job.error = f"終了コード {exit_code}\n{tail_text}".strip()
+            err_msg = f"終了コード {exit_code}\n{tail_text}".strip()
+            self.reservations.mark_job_failed(job.id, err_msg)
             self._push_log(job.id, f"--- 解析失敗 ({job.video.name}, 終了コード: {exit_code}) ---\n")
 
-        self.reservations.save()
         self._push_finished(job.id, exit_code)
         self._push_queue_update()
 
@@ -520,12 +599,17 @@ class AnalysisWorkerManager:
         self._evaluate_js(js_code)
 
     def _push_queue_update(self) -> None:
-        """Pushes serialized jobs snapshot to frontend."""
+        """Pushes serialized jobs snapshot to frontend outside locks."""
         window = self._get_window()
         if window is None:
             return
+        jobs_snapshot = self.reservations.snapshot_jobs()
+        with self._state_lock:
+            active_job_id = self._current_job_id
+            queue_active = self._is_running
+
         jobs_payload = []
-        for j in self.reservations.jobs:
+        for j in jobs_snapshot:
             if callable(self._job_serializer):
                 jobs_payload.append(self._job_serializer(j))
                 continue
@@ -550,8 +634,8 @@ class AnalysisWorkerManager:
 
         payload = {
             "jobs": jobs_payload,
-            "active_job_id": self._current_job_id,
-            "queue_active": self._is_running,
+            "active_job_id": active_job_id,
+            "queue_active": queue_active,
         }
         escaped_payload = json.dumps(payload, ensure_ascii=False)
         escaped_jobs = json.dumps(jobs_payload, ensure_ascii=False)

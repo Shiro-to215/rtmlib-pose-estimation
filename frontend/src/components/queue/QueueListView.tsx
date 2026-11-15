@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { QueueToolbar } from './QueueToolbar';
 import { QueueGuideStrip } from './QueueGuideStrip';
 import { QueueJobCard } from './QueueJobCard';
@@ -12,6 +12,7 @@ export interface QueueListViewProps {
   onOpenJobSettings: (jobId: string) => void;
   onDeleteJobs: (jobIds: string[]) => void;
   onMoveJob: (jobId: string, direction: 'up' | 'down') => void;
+  onReorderJob?: (jobId: string, targetVisibleIndex: number) => void;
   onRetryJob: (jobId: string) => void;
 }
 
@@ -22,6 +23,7 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
   onOpenJobSettings,
   onDeleteJobs,
   onMoveJob,
+  onReorderJob,
   onRetryJob,
 }) => {
   // Only display pending and failed jobs in the active queue list
@@ -33,6 +35,17 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [lastAnchorId, setLastAnchorId] = useState<string | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const visibleSet = new Set(visibleJobs.map((j) => j.id));
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => visibleSet.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+    if (lastAnchorId && !visibleSet.has(lastAnchorId)) {
+      setLastAnchorId(null);
+    }
+  }, [jobs]);
 
   // Selection logic supporting single, Ctrl (toggle), and Shift (range)
   const handleSelect = (e: React.MouseEvent, jobId: string) => {
@@ -92,11 +105,19 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
   };
 
   const handleDrop = (_e: React.DragEvent, targetIndex: number) => {
-    if (draggedIndex === null || draggedIndex === targetIndex) return;
+    if (draggedIndex === null || draggedIndex === targetIndex) {
+      setDraggedIndex(null);
+      return;
+    }
     const draggedJob = visibleJobs[draggedIndex];
-    if (!draggedJob) return;
+    if (!draggedJob) {
+      setDraggedIndex(null);
+      return;
+    }
 
-    if (draggedIndex < targetIndex) {
+    if (onReorderJob) {
+      onReorderJob(draggedJob.id, targetIndex);
+    } else if (draggedIndex < targetIndex) {
       onMoveJob(draggedJob.id, 'down');
     } else {
       onMoveJob(draggedJob.id, 'up');
@@ -145,6 +166,7 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
+                onDragEnd={() => setDraggedIndex(null)}
                 index={idx}
               />
             ))}

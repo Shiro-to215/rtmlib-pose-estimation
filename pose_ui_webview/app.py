@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 import json
 import logging
 import os
@@ -75,9 +74,14 @@ class ThumbnailDaemon:
                 self._seen.discard(sid)
 
     def stop(self) -> None:
-        """Signals the background extraction thread to terminate."""
+        """Signals the background extraction thread to terminate and waits briefly."""
         self._stop_event.set()
         self._queue.put(("", ""))
+        if (
+            self._worker_thread.is_alive()
+            and threading.current_thread() != self._worker_thread
+        ):
+            self._worker_thread.join(timeout=2.0)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -86,17 +90,21 @@ class ThumbnailDaemon:
             except queue.Empty:
                 continue
 
-            if self._stop_event.is_set() or not job_id:
-                break
+            try:
+                if self._stop_event.is_set() or not job_id:
+                    break
 
-            data_uri, info_text = self._extract_frame(video_path)
+                data_uri, info_text = self._extract_frame(video_path)
+                if self._stop_event.is_set():
+                    break
 
-            with self._lock:
-                self._cache[job_id] = data_uri
-                self._info[job_id] = info_text
+                with self._lock:
+                    self._cache[job_id] = data_uri
+                    self._info[job_id] = info_text
 
-            self._dispatch_to_window(job_id, data_uri, info_text)
-            self._queue.task_done()
+                self._dispatch_to_window(job_id, data_uri, info_text)
+            finally:
+                self._queue.task_done()
 
     def _extract_frame(self, video_path: str) -> tuple[str, str]:
         if not os.path.exists(video_path):
@@ -130,8 +138,10 @@ class ThumbnailDaemon:
             cap.release()
 
     def _dispatch_to_window(self, job_id: str, data_uri: str, info_text: str) -> None:
+        if self._stop_event.is_set():
+            return
         win = self._get_window()
-        if win is None:
+        if win is None or self._stop_event.is_set():
             return
         payload = json.dumps({"job_id": job_id, "data_url": data_uri, "info": info_text}, ensure_ascii=False)
         escaped_id = json.dumps(job_id)
@@ -148,6 +158,8 @@ class ThumbnailDaemon:
             f"  detail: {payload} "
             f"}}));"
         )
+        if self._stop_event.is_set():
+            return
         try:
             win.evaluate_js(js_code)
         except Exception:
@@ -305,6 +317,7 @@ def launch_webview_gui(
                 if raw_path and Path(raw_path).suffix.lower() in video_exts:
                     dropped_paths.append(str(Path(raw_path).resolve()))
             if dropped_paths:
+                backend_api.register_allowed_videos(dropped_paths)
                 payload = json.dumps({"paths": dropped_paths}, ensure_ascii=False)
                 window.evaluate_js(
                     f"window.dispatchEvent(new CustomEvent('pywebview:files-dropped', {{ detail: {payload} }}));"
@@ -326,7 +339,7 @@ def launch_webview_gui(
             logger.debug("Native DnD registration skipped: %s", exc)
 
     def on_shown() -> None:
-        thumbnail_daemon.enqueue_jobs(backend_api.reservations.jobs)
+        thumbnail_daemon.enqueue_jobs(backend_api.reservations.snapshot_jobs())
 
     def on_closing() -> bool:
         if getattr(backend_api, "queue_active", False):
@@ -337,14 +350,12 @@ def launch_webview_gui(
             )
             title = "解析を中断して終了"
             try:
-                MB_YESNO = 0x04
-                MB_ICONWARNING = 0x30
-                IDYES = 6
-                res = ctypes.windll.user32.MessageBoxW(0, msg, title, MB_YESNO | MB_ICONWARNING)
-                if res != IDYES:
+                confirmed = window.create_confirmation_dialog(title, msg)
+                if not bool(confirmed):
                     return False
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Confirmation dialog failed during closing: %s", exc)
+                return False
 
             backend_api.cancel_current_job()
             time.sleep(0.3)

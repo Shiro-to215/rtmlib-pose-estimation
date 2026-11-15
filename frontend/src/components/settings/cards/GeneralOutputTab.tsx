@@ -121,17 +121,17 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           onChange={(v) => setFieldValue('DEVICE', v)}
         />
 
-        {/* CSV_MAX_PERSONS */}
-        <SliderWithInput
-          label="CSV出力の最大人数列数"
-          description="CSVファイルに関節座標を記録する被写体の最大追跡枠数"
-          value={values.CSV_MAX_PERSONS ?? 3}
-          min={1}
-          max={20}
-          step={1}
-          unit="人"
-          onChange={(v) => setFieldValue('CSV_MAX_PERSONS', Math.round(v))}
-          error={errors.CSV_MAX_PERSONS}
+        {/* CAPTURE_FPS */}
+        <NullableNumberInput
+          label="元動画の撮影フレームレート (FPS)"
+          description="スローモーション再生動画などの実際の撮影fps（例: 240, 119.88）。空欄時はメタデータまたは動画再生FPSから自動取得"
+          value={values.CAPTURE_FPS ?? null}
+          allowFloat
+          min={0.1}
+          step="any"
+          placeholder="空欄（自動取得）"
+          onChange={(v) => setFieldValue('CAPTURE_FPS', v)}
+          error={errors.CAPTURE_FPS}
         />
       </div>
 
@@ -198,31 +198,12 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
             error={errors.YOLO_IOU}
           />
 
-          <SliderWithInput
-            label="人物クロップ余白率"
-            description="姿勢推定モデルへ送る前のバウンディングボックス拡張余白率"
-            value={values.CROP_PADDING_RATIO ?? 0.25}
-            min={0.0}
-            max={1.0}
-            step={0.05}
-            onChange={(v) => setFieldValue('CROP_PADDING_RATIO', parseFloat(v.toFixed(2)))}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 mt-2">
           <TagListInput
             label="検出対象クラスID"
             description="0=人物 (person)。複数指定はカンマ区切り"
             value={values.YOLO_CLASSES || [0]}
             onChange={(v) => setFieldValue('YOLO_CLASSES', v)}
             error={errors.YOLO_CLASSES}
-          />
-
-          <NullableNumberInput
-            label="固定追跡ID"
-            description="空欄時は動画全体の移動量から主要被写体を自動選択"
-            value={values.YOLO_TRACK_ID ?? null}
-            onChange={(v) => setFieldValue('YOLO_TRACK_ID', v)}
           />
         </div>
       </div>
@@ -285,24 +266,35 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
       ) : (
         <div className="border border-[#DDD6FE] rounded-lg p-3.5 bg-white">
           <div className="flex items-center justify-between mb-2">
-            <h4 className="text-xs font-bold text-[#7C3AED]">ViTPose++ 骨格推定設定（PyTorch 最高精度）</h4>
+            <h4 className="text-xs font-bold text-[#7C3AED]">ViTPose++ 骨格推定設定（ONNX Runtime / PyTorch）</h4>
             <span className="text-[11px] font-mono font-bold text-[#6D28D9] bg-[#F5F3FF] border border-[#DDD6FE] px-2 py-0.5 rounded">
-              解像度: 256×192 (4:3 標準固定) / Classic デコーダ
+              解像度: 256×192 (4:3 標準固定) / UDP デコーダ
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-3">
             <DropdownSelect
               label="ViTPose++ モデルサイズ"
-              description="研究本番は H、動作確認は B/L など目的に応じて選択（usyd-community/vitpose-plus-*）"
+              description="研究本番は H、動作確認は B/L など（usyd-community/vitpose-plus-*）"
               value={String(values.VITPOSE_MODEL || 'h').toLowerCase()}
               options={vitposeModelOptions}
               onChange={(v) => setFieldValue('VITPOSE_MODEL', v)}
             />
 
+            <DropdownSelect
+              label="計算精度 (CUDA)"
+              description="FP16 は高速・省VRAM、FP32 は単精度（CPU時は自動で FP32 動作）"
+              value={String(values.VITPOSE_PRECISION || 'fp16').toLowerCase()}
+              options={[
+                { value: 'fp16', label: 'FP16 (半精度・高速)' },
+                { value: 'fp32', label: 'FP32 (単精度・高精度)' },
+              ]}
+              onChange={(v) => setFieldValue('VITPOSE_PRECISION', v)}
+            />
+
             <ToggleSwitch
               label="Flip Test（左右反転 TTA）"
-              description="元画像と左右反転画像のヒートマップを平均化し精度・安定性を向上（OFFで速度約2倍）"
+              description="反転画像のヒートマップを平均化し精度・安定性を向上（OFFで速度約2倍）"
               checked={values.VITPOSE_FLIP_TEST !== false}
               onChange={(v) => setFieldValue('VITPOSE_FLIP_TEST', v)}
             />
@@ -333,7 +325,7 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           </div>
 
           <div className="mt-3 p-2.5 rounded-md bg-[#F5F3FF] border border-[#EDE9FE] text-[11px] text-[#5B21B6] leading-relaxed">
-            <strong>内部最適化仕様（固定）:</strong> Pass 1（YOLO）の VRAM 解放後にのみモデルをロードします。CUDA 時は FP16 半精度で順伝播し、UDP サブピクセル座標算出の直前で FP32 に戻して誤差とジッターを抑制します。
+            <strong>内部最適化仕様（固定）:</strong> Pass 1（YOLO）の VRAM 解放後に ONNX Runtime（不可時は PyTorch）で推論を実行し、CUDA時は指定精度（FP16/FP32）、UDP サブピクセル座標算出は FP32 で行ってジッターを抑制します。
           </div>
         </div>
       )}

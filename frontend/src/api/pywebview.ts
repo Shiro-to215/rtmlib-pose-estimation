@@ -359,64 +359,46 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_CROP_SKELETON_VIDEO_NAME: 'sample_dance_01-crop-skeleton.mp4',
         OUTPUT_CSV_NAME: 'sample_dance_01.csv',
         OUTPUT_METADATA_NAME: 'sample_dance_01_metadata.txt',
+        OUTPUT_METADATA_JSON_NAME: 'sample_dance_01_metadata.json',
+        OUTPUT_NPZ_NAME: 'sample_dance_01.npz',
         DEVICE: 'auto',
+        CAPTURE_FPS: null,
         YOLO_MODEL: 'yolo11m.pt',
         YOLO_CLASSES: [0],
-        YOLO_TRACK_ID: null,
-        CSV_MAX_PERSONS: 3,
         POSE_ENGINE: 'rtmpose',
         RTMLIB_POSE_MODEL: 'x',
         RTMLIB_POSE_INPUT_SIZE: '384x288',
         RTMPOSE_BATCH_SIZE: 1,
         VITPOSE_MODEL: 'h',
         VITPOSE_INPUT_SIZE: '256x192',
+        VITPOSE_PRECISION: 'fp16',
         VITPOSE_BATCH_SIZE: 4,
         VITPOSE_FLIP_TEST: true,
         YOLO_IMAGE_SIZE: 1280,
         YOLO_CONFIDENCE: 0.20,
         YOLO_IOU: 0.50,
-        CROP_PADDING_RATIO: 0.25,
         KEYPOINT_THRESHOLD: 0.45,
         YOLO_TRACKER: 'bytetrack.yaml',
-        TARGET_LOCK_RAW_ID: true,
-        TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING: true,
         TARGET_SELECTION_MIN_FRAMES: 15,
         TARGET_SELECTION_COVERAGE_WEIGHT: 0.50,
         TARGET_BOX_FILL_MAX_FRAMES: 60,
-        TARGET_REACQUIRE_MAX_DISTANCE: 300.0,
-        TARGET_REACQUIRE_MIN_IOU: 0.05,
-        TARGET_TRACK_MATCH_THRESHOLD: 0.75,
-        TARGET_TRACK_MIN_IOU: 0.15,
-        TRACK_MAX_DISTANCE: 250.0,
         TRACK_MAX_MISSED_FRAMES: 8,
         TRACK_MATCH_THRESHOLD: 2.00,
-        TRACK_CENTER_WEIGHT: 0.35,
-        TRACK_KEYPOINT_WEIGHT: 0.35,
-        TRACK_POSE_WEIGHT: 0.20,
-        TRACK_BBOX_WEIGHT: 0.10,
         TRACK_VELOCITY_SMOOTHING: 0.35,
         TRACK_RAW_ID_BONUS: 2.00,
         TRACK_PREDICTED_BOX_WEIGHT: 0.35,
         TRACK_PREDICTION_MAX_FRAMES: 2,
-        POSE_TRACK_KEYPOINT_WEIGHT: 0.65,
-        POSE_TRACK_CENTER_WEIGHT: 0.25,
-        POSE_TRACK_SHAPE_WEIGHT: 0.10,
-        POSE_BOX_IOU_WEIGHT: 2.00,
-        POSE_BOX_CENTER_WEIGHT: 0.50,
-        POSE_TEMPORAL_WEIGHT: 0.50,
-        DRAW_SKELETON: true,
-        DRAW_BBOX: true,
         SKELETON_LINE_WIDTH: 2,
         KEYPOINT_RADIUS: 4,
-        LABEL_FONT_SCALE: 0.70,
+        LABEL_FONT_SCALE: 1.0,
       },
       summary: {
+        pose_engine: 'rtmpose',
         pose_model: 'x',
         pose_input_size: '384x288',
         yolo_model: 'yolo11m.pt',
         device: 'auto',
-        track_id: null,
-        csv_max_persons: 3,
+        capture_fps: null,
       },
     },
     {
@@ -440,21 +422,22 @@ class BrowserMockBackend implements BackendApi {
         OUTPUT_CROP_SKELETON_VIDEO_NAME: 'sample_sprint-crop-skeleton.mp4',
         OUTPUT_CSV_NAME: 'sample_sprint.csv',
         OUTPUT_METADATA_NAME: 'sample_sprint_metadata.txt',
+        OUTPUT_METADATA_JSON_NAME: 'sample_sprint_metadata.json',
+        OUTPUT_NPZ_NAME: 'sample_sprint.npz',
         DEVICE: 'auto',
+        CAPTURE_FPS: 240,
         YOLO_MODEL: 'yolo11s.pt',
         YOLO_CLASSES: [0],
-        YOLO_TRACK_ID: 1,
-        CSV_MAX_PERSONS: 1,
         RTMLIB_POSE_MODEL: 's',
         RTMLIB_POSE_INPUT_SIZE: '256x192',
       },
       summary: {
+        pose_engine: 'rtmpose',
         pose_model: 's',
         pose_input_size: '256x192',
         yolo_model: 'yolo11s.pt',
         device: 'auto',
-        track_id: 1,
-        csv_max_persons: 1,
+        capture_fps: 240,
       },
     },
   ];
@@ -475,6 +458,8 @@ class BrowserMockBackend implements BackendApi {
       'OUTPUT_CROP_SKELETON_VIDEO_NAME',
       'OUTPUT_CSV_NAME',
       'OUTPUT_METADATA_NAME',
+      'OUTPUT_METADATA_JSON_NAME',
+      'OUTPUT_NPZ_NAME',
     ]);
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(settings || {})) {
@@ -583,15 +568,16 @@ class BrowserMockBackend implements BackendApi {
           pose_input_size: settings?.RTMLIB_POSE_INPUT_SIZE || '384x288',
           vitpose_model: settings?.VITPOSE_MODEL || 'h',
           vitpose_input_size: settings?.VITPOSE_INPUT_SIZE || '256x192',
+          vitpose_precision: settings?.VITPOSE_PRECISION || 'fp16',
           vitpose_flip_test: settings?.VITPOSE_FLIP_TEST ?? true,
           yolo_model: settings?.YOLO_MODEL || 'yolo11m.pt',
           device: settings?.DEVICE || 'auto',
-          track_id: settings?.YOLO_TRACK_ID ?? null,
-          csv_max_persons: settings?.CSV_MAX_PERSONS ?? 3,
+          capture_fps: settings?.CAPTURE_FPS ?? null,
         },
       };
     });
     this._jobs.push(...created);
+    this._emitQueueUpdate();
     return created;
   }
 
@@ -612,6 +598,17 @@ class BrowserMockBackend implements BackendApi {
       this._jobs[targetIdx] = temp;
       this._emitQueueUpdate();
     }
+    return [...this._jobs];
+  }
+
+  async reorder_job(jobId: string, targetVisibleIndex: number): Promise<ReservationJob[]> {
+    const srcIdx = this._jobs.findIndex((j) => j.id === jobId);
+    if (srcIdx === -1 || targetVisibleIndex < 0 || targetVisibleIndex >= this._jobs.length) {
+      return [...this._jobs];
+    }
+    const [item] = this._jobs.splice(srcIdx, 1);
+    this._jobs.splice(targetVisibleIndex, 0, item);
+    this._emitQueueUpdate();
     return [...this._jobs];
   }
 
@@ -767,7 +764,9 @@ class BrowserMockBackend implements BackendApi {
       OUTPUT_CROP_VIDEO_NAME: `${base}-crop.mp4`,
       OUTPUT_CROP_SKELETON_VIDEO_NAME: `${base}-crop-skeleton.mp4`,
       OUTPUT_CSV_NAME: `${base}.csv`,
+      OUTPUT_NPZ_NAME: `${base}.npz`,
       OUTPUT_METADATA_NAME: `${base}_metadata.txt`,
+      OUTPUT_METADATA_JSON_NAME: `${base}_metadata.json`,
     };
   }
 

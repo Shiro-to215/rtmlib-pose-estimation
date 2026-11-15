@@ -170,8 +170,11 @@ def decode_heatmaps_udp(
             vb = vb[active]
             vk = vk[active]
             v_blurred = blurred_valid[active]
-            px_v = px_grid[vb, vk]
-            py_v = py_grid[vb, vk]
+            b_argmax = np.argmax(v_blurred.reshape(len(vb), -1), axis=-1)
+            px_v = (b_argmax % hm_w).astype(np.intp)
+            py_v = (b_argmax // hm_w).astype(np.intp)
+            coords[vb, vk, 0] = px_v.astype(np.float32)
+            coords[vb, vk, 1] = py_v.astype(np.float32)
 
             interior = (px_v > 1) & (px_v < hm_w - 2) & (py_v > 1) & (py_v < hm_h - 2)
             if np.any(interior):
@@ -217,8 +220,8 @@ def decode_heatmaps_udp(
                 ek = vk[e_idx]
                 epx = px_v[e_idx]
                 epy = py_v[e_idx]
-                edx = hm_arr[eb, ek, epy, epx + 1] - hm_arr[eb, ek, epy, epx - 1]
-                edy = hm_arr[eb, ek, epy + 1, epx] - hm_arr[eb, ek, epy - 1, epx]
+                edx = v_blurred[e_idx, epy, epx + 1] - v_blurred[e_idx, epy, epx - 1]
+                edy = v_blurred[e_idx, epy + 1, epx] - v_blurred[e_idx, epy - 1, epx]
                 coords[eb, ek, 0] += np.sign(edx) * np.float32(0.25)
                 coords[eb, ek, 1] += np.sign(edy) * np.float32(0.25)
 
@@ -648,6 +651,7 @@ class ViTPoseEstimator(BasePoseEstimator):
         device: str = "cpu",
         *,
         flip_test: bool = True,
+        precision: str = "fp16",
         pytorch_model: Any = None,
         ort_session: Any = None,
         use_onnx: bool = True,
@@ -656,7 +660,9 @@ class ViTPoseEstimator(BasePoseEstimator):
         self._asset = self._selection["asset"]
         self._device = str(device)
         self._is_cuda = self._device.startswith("cuda")
-        self._use_fp16 = self._is_cuda
+        norm_precision = str(precision or "fp16").strip().lower()
+        self._precision = norm_precision if norm_precision in ("fp16", "fp32") else "fp16"
+        self._use_fp16 = self._is_cuda and self._precision == "fp16"
         self._flip_test = bool(flip_test)
         self._dataset_index_value = int(self._asset.get("dataset_index", 0))
         self._model: Any = None
@@ -671,54 +677,61 @@ class ViTPoseEstimator(BasePoseEstimator):
         else:
             self._model = self._load_model()
 
-    def _init_ort_or_fallback(self) -> None:
+    def _ensure_and_load_ort_session(self, *, fp16: bool, export_device: str) -> Any:
         onnx_path = get_vitpose_onnx_path(
             self._selection["model_size"],
             self._selection["resolution"],
-            fp16=self._use_fp16,
+            fp16=fp16,
         )
+        if not has_cached_vitpose_onnx(
+            self._selection["model_size"],
+            self._selection["resolution"],
+            fp16=fp16,
+        ):
+            print(
+                f"ViTPose++ ONNX変換・キャッシュ生成中: {self._selection['model_size'].upper()} "
+                f"({'FP16' if fp16 else 'FP32'}, {export_device})",
+                flush=True,
+            )
+            pt_model = self._load_model(target_device=export_device, use_fp16=fp16)
+            try:
+                export_vitpose_to_onnx(
+                    pt_model,
+                    onnx_path,
+                    self.model_input_size,
+                    dataset_index=self._dataset_index_value,
+                    fp16=fp16,
+                    export_device=export_device,
+                )
+            finally:
+                del pt_model
+                clear_cuda_cache()
+        return self._create_ort_session(onnx_path)
+
+    def _init_ort_or_fallback(self) -> None:
         try:
-            if not has_cached_vitpose_onnx(
-                self._selection["model_size"],
-                self._selection["resolution"],
+            self._ort_session = self._ensure_and_load_ort_session(
                 fp16=self._use_fp16,
-            ):
+                export_device=self._device,
+            )
+            return
+        except Exception as primary_exc:
+            if self._use_fp16:
                 print(
-                    f"ViTPose++ ONNX変換・キャッシュ生成中: {self._selection['model_size'].upper()} "
-                    f"({'FP16' if self._use_fp16 else 'FP32'})",
+                    f"ViTPose++ FP16 ONNX初期化に失敗したため FP32 ONNX へフォールバックします: {primary_exc}",
                     flush=True,
                 )
-                pt_model = self._load_model(target_device="cpu")
                 try:
-                    try:
-                        export_vitpose_to_onnx(
-                            pt_model,
-                            onnx_path,
-                            self.model_input_size,
-                            dataset_index=self._dataset_index_value,
-                            fp16=self._use_fp16,
-                            export_device="cpu",
-                        )
-                    except Exception:
-                        if not self._is_cuda:
-                            raise
-                        export_vitpose_to_onnx(
-                            pt_model,
-                            onnx_path,
-                            self.model_input_size,
-                            dataset_index=self._dataset_index_value,
-                            fp16=self._use_fp16,
-                            export_device=self._device,
-                        )
-                finally:
-                    del pt_model
-                    clear_cuda_cache()
-
-            self._ort_session = self._create_ort_session(onnx_path)
-            return
-        except Exception as exc:
+                    self._ort_session = self._ensure_and_load_ort_session(
+                        fp16=False,
+                        export_device="cpu",
+                    )
+                    self._use_fp16 = False
+                    return
+                except Exception as fp32_exc:
+                    primary_exc = fp32_exc
             print(
-                f"ViTPose++ ONNX初期化をスキップし、PyTorch推論へフォールバックします: {exc}",
+                f"ViTPose++ ONNX初期化をスキップし、PyTorch推論へフォールバックします: {primary_exc}",
                 flush=True,
             )
             self._ort_session = None
@@ -750,7 +763,12 @@ class ViTPoseEstimator(BasePoseEstimator):
             raise RuntimeError("ONNX Runtime で CUDAExecutionProvider を利用できません。")
         return session
 
-    def _load_model(self, target_device: Optional[str] = None) -> Any:
+    def _load_model(
+        self,
+        target_device: Optional[str] = None,
+        *,
+        use_fp16: Optional[bool] = None,
+    ) -> Any:
         configure_hf_environment()
         import torch
         import transformers
@@ -758,7 +776,8 @@ class ViTPoseEstimator(BasePoseEstimator):
         transformers.utils.logging.disable_progress_bar()
         from transformers import VitPoseForPoseEstimation
 
-        dtype = torch.float16 if self._use_fp16 else torch.float32
+        fp16_flag = self._use_fp16 if use_fp16 is None else bool(use_fp16)
+        dtype = torch.float16 if fp16_flag else torch.float32
         repo_id = self._asset["repo_id"]
         dest_device = self._device if target_device is None else target_device
 
@@ -828,6 +847,8 @@ class ViTPoseEstimator(BasePoseEstimator):
         # Leave safe headroom for CUDA allocator / context and output video writers.
         usable_gb = max(0.25, (free_gb - 1.0) * 0.75)
         per_sample_gb = float(self._asset.get("vram_per_sample_gb", 0.15))
+        if not self._use_fp16:
+            per_sample_gb *= 2.0
         safe_max = max(1, int(usable_gb / max(per_sample_gb, 0.02)))
         if requested > safe_max:
             print(
@@ -1009,6 +1030,8 @@ class ViTPoseEstimator(BasePoseEstimator):
         center: Any,
         scale: Any,
         keypoint_threshold: float = 0.45,
+        skeleton_line_width: int = 2,
+        keypoint_radius: int = 4,
     ) -> Optional[np.ndarray]:
         if crop_bgr is None:
             return None
@@ -1029,6 +1052,8 @@ class ViTPoseEstimator(BasePoseEstimator):
             crop_kpts[None, :, :],
             np.asarray([pose_scores], dtype=np.float32),
             kpt_thr=keypoint_threshold,
+            skeleton_line_width=skeleton_line_width,
+            keypoint_radius=keypoint_radius,
         )
 
     def close(self) -> None:

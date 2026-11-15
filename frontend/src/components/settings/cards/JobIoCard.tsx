@@ -99,7 +99,9 @@ export const JobIoCard: React.FC<JobIoCardProps> = ({
         <div>・ 骨格なしcrop動画: {previewNames.OUTPUT_CROP_VIDEO_NAME || `${job.output_folder}-crop.mp4`}</div>
         <div>・ 骨格ありcrop動画: {previewNames.OUTPUT_CROP_SKELETON_VIDEO_NAME || `${job.output_folder}-crop-skeleton.mp4`}</div>
         <div>・ CSVデータ: {previewNames.OUTPUT_CSV_NAME || `${job.output_folder}.csv`}</div>
-        <div>・ メタデータ: {previewNames.OUTPUT_METADATA_NAME || `${job.output_folder}_metadata.txt`}</div>
+        <div>・ NPZデータ: {previewNames.OUTPUT_NPZ_NAME || `${job.output_folder}.npz`}</div>
+        <div>・ メタデータ(TXT): {previewNames.OUTPUT_METADATA_NAME || `${job.output_folder}_metadata.txt`}</div>
+        <div>・ メタデータ(JSON): {previewNames.OUTPUT_METADATA_JSON_NAME || `${job.output_folder}_metadata.json`}</div>
       </div>
 
       {/* Optional Thumbnail Image */}

@@ -6,9 +6,12 @@ import csv
 from datetime import datetime
 import json
 import math
+import os
 import queue
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from time import perf_counter
@@ -17,6 +20,7 @@ from pose_estimators import (
     BasePoseEstimator,
     RTMLIB_POSE_ASSETS,
     VITPOSE_ASSETS,
+    clamped_target_box,
     clear_cuda_cache as _estimator_clear_cuda_cache,
     configure_hf_environment,
     create_pose_estimator as _factory_create_pose_estimator,
@@ -63,6 +67,8 @@ OUTPUT_CROP_VIDEO_NAME = "踏切左-7-crop.mp4"
 OUTPUT_CROP_SKELETON_VIDEO_NAME = "踏切左-7-crop-skeleton.mp4"
 OUTPUT_CSV_NAME = "踏切左-7.csv"
 OUTPUT_METADATA_NAME = "踏切左-7_metadata.txt"
+OUTPUT_METADATA_JSON_NAME = "踏切左-7_metadata.json"
+OUTPUT_NPZ_NAME = "踏切左-7.npz"
 
 # YOLO/ByteTrack設定。YOLO_MODELは初回実行時に自動ダウンロードされます。
 # 高速なnではなく、精度優先のmを使用します。
@@ -73,17 +79,6 @@ YOLO_CONFIDENCE = 0.20
 YOLO_IOU = 0.50
 YOLO_CLASSES = [0]  # COCOのperson
 YOLO_BATCH_SIZE = 1
-
-# 対象選択。指定した場合だけ、そのYOLO追跡IDを対象にします。
-# Noneの場合は、動画全体の移動量から対象IDを自動選択します。
-YOLO_TRACK_ID = None
-
-
-
-# 対象人物のクロップ設定。0.25は上下左右に25%相当の余白を追加します。
-CROP_PADDING_RATIO = 0.25
-TARGET_REACQUIRE_MAX_DISTANCE = 300.0
-TARGET_REACQUIRE_MIN_IOU = 0.05
 
 COCO_KEYPOINTS = [
     "鼻", "左目", "右目", "左耳", "右耳",
@@ -101,53 +96,43 @@ VITPOSE_MODEL = "h"
 VITPOSE_INPUT_SIZE = "256x192"
 VITPOSE_BATCH_SIZE = 4
 VITPOSE_FLIP_TEST = True
+VITPOSE_PRECISION = "fp16"
 
-#各種設定
+# 対象選定戦略（"long_jump" / "legacy"）
+TARGET_SELECTION_STRATEGY = "long_jump"
+
+# 各種設定
+CAPTURE_FPS = None
 KEYPOINT_THRESHOLD = 0.45
-TRACK_MAX_DISTANCE = 250.0
+SKELETON_LINE_WIDTH = 2
+KEYPOINT_RADIUS = 4
+LABEL_FONT_SCALE = 1.0
 TRACK_MAX_MISSED_FRAMES = 8
-CSV_MAX_PERSONS = 3
 TRACK_MATCH_THRESHOLD = 2.0
-TRACK_CENTER_WEIGHT = 0.35
-TRACK_KEYPOINT_WEIGHT = 0.35
-TRACK_POSE_WEIGHT = 0.20
-TRACK_BBOX_WEIGHT = 0.10
 TRACK_VELOCITY_SMOOTHING = 0.35
 TRACK_RAW_ID_BONUS = 2.0
 TRACK_PREDICTED_BOX_WEIGHT = 0.35
 TRACK_PREDICTION_MAX_FRAMES = 2
-TARGET_TRACK_MATCH_THRESHOLD = 0.75
-TARGET_TRACK_MIN_IOU = 0.15
-TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING = True
-TARGET_LOCK_RAW_ID = True
 TARGET_SELECTION_MIN_FRAMES = 15
 TARGET_SELECTION_COVERAGE_WEIGHT = 0.5
 TARGET_BOX_FILL_MAX_FRAMES = 60
-POSE_TRACK_KEYPOINT_WEIGHT = 0.65
-POSE_TRACK_CENTER_WEIGHT = 0.25
-POSE_TRACK_SHAPE_WEIGHT = 0.10
-POSE_BOX_IOU_WEIGHT = 2.0
-POSE_BOX_CENTER_WEIGHT = 0.5
-POSE_TEMPORAL_WEIGHT = 0.5
 
 
 ENGINE_SETTING_NAMES = (
     "INPUT_ROOT", "INPUT_VIDEO_NAME", "THUMBNAIL_ROOT", "THUMBNAIL_IMAGE_NAME",
     "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME", "OUTPUT_VIDEO_NAME", "OUTPUT_CROP_VIDEO_NAME",
-    "OUTPUT_CROP_SKELETON_VIDEO_NAME", "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME", "YOLO_MODEL", "YOLO_TRACKER",
-    "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID",
-    "CROP_PADDING_RATIO", "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
+    "OUTPUT_CROP_SKELETON_VIDEO_NAME", "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME",
+    "OUTPUT_METADATA_JSON_NAME", "OUTPUT_NPZ_NAME",
+    "YOLO_MODEL", "YOLO_TRACKER",
+    "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE", "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE",
     "POSE_ENGINE", "BACKEND", "DEVICE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
     "RTMPOSE_BATCH_SIZE", "VITPOSE_MODEL", "VITPOSE_INPUT_SIZE",
-    "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "KEYPOINT_THRESHOLD", "TRACK_MAX_DISTANCE",
-    "TRACK_MAX_MISSED_FRAMES", "CSV_MAX_PERSONS", "TRACK_MATCH_THRESHOLD",
-    "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT", "TRACK_BBOX_WEIGHT",
+    "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "VITPOSE_PRECISION",
+    "CAPTURE_FPS", "KEYPOINT_THRESHOLD", "SKELETON_LINE_WIDTH", "KEYPOINT_RADIUS", "LABEL_FONT_SCALE",
+    "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS", "TRACK_PREDICTED_BOX_WEIGHT",
-    "TRACK_PREDICTION_MAX_FRAMES", "TARGET_TRACK_MATCH_THRESHOLD", "TARGET_TRACK_MIN_IOU",
-    "TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING", "TARGET_LOCK_RAW_ID", "TARGET_SELECTION_MIN_FRAMES",
-    "TARGET_SELECTION_COVERAGE_WEIGHT", "TARGET_BOX_FILL_MAX_FRAMES", "POSE_TRACK_KEYPOINT_WEIGHT",
-    "POSE_TRACK_CENTER_WEIGHT", "POSE_TRACK_SHAPE_WEIGHT", "POSE_BOX_IOU_WEIGHT",
-    "POSE_BOX_CENTER_WEIGHT", "POSE_TEMPORAL_WEIGHT",
+    "TRACK_PREDICTION_MAX_FRAMES", "TARGET_SELECTION_MIN_FRAMES",
+    "TARGET_SELECTION_COVERAGE_WEIGHT", "TARGET_BOX_FILL_MAX_FRAMES",
 )
 ENGINE_DEFAULTS = {key: globals()[key] for key in ENGINE_SETTING_NAMES}
 PATH_SETTING_KEYS = {"INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"}
@@ -157,6 +142,8 @@ OUTPUT_NAME_KEYS = {
     "OUTPUT_CROP_SKELETON_VIDEO_NAME",
     "OUTPUT_CSV_NAME",
     "OUTPUT_METADATA_NAME",
+    "OUTPUT_METADATA_JSON_NAME",
+    "OUTPUT_NPZ_NAME",
 }
 
 DEFAULTS = {
@@ -170,34 +157,31 @@ DEFAULTS.update({
 })
 
 GROUPS = [
-    ("入力・出力", ["INPUT_VIDEO_FILE", "THUMBNAIL_FILE", "OUTPUT_DIRECTORY"]),
+    ("入力・出力", ["INPUT_VIDEO_FILE", "THUMBNAIL_FILE", "OUTPUT_DIRECTORY", "CAPTURE_FPS"]),
     ("YOLO・対象人物", ["YOLO_MODEL", "YOLO_TRACKER", "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE",
-                    "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE", "YOLO_TRACK_ID", "CROP_PADDING_RATIO",
-                    "TARGET_REACQUIRE_MAX_DISTANCE", "TARGET_REACQUIRE_MIN_IOU",
+                    "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
                     "TARGET_BOX_FILL_MAX_FRAMES"]),
     ("姿勢推定・追跡", ["POSE_ENGINE", "RTMLIB_POSE_MODEL", "RTMLIB_POSE_INPUT_SIZE",
                      "RTMPOSE_BATCH_SIZE", "VITPOSE_MODEL", "VITPOSE_INPUT_SIZE",
-                     "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "BACKEND", "DEVICE",
-                     "KEYPOINT_THRESHOLD", "CSV_MAX_PERSONS",
-                     "TRACK_MAX_DISTANCE", "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
-                     "TRACK_CENTER_WEIGHT", "TRACK_KEYPOINT_WEIGHT", "TRACK_POSE_WEIGHT",
-                     "TRACK_BBOX_WEIGHT", "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
-                     "TRACK_PREDICTED_BOX_WEIGHT", "TRACK_PREDICTION_MAX_FRAMES",
-                     "TARGET_TRACK_MATCH_THRESHOLD", "TARGET_TRACK_MIN_IOU",
-                     "TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING", "TARGET_LOCK_RAW_ID",
-                     "POSE_TRACK_KEYPOINT_WEIGHT", "POSE_TRACK_CENTER_WEIGHT", "POSE_TRACK_SHAPE_WEIGHT",
-                     "POSE_BOX_IOU_WEIGHT", "POSE_BOX_CENTER_WEIGHT", "POSE_TEMPORAL_WEIGHT"]),
+                     "VITPOSE_BATCH_SIZE", "VITPOSE_FLIP_TEST", "VITPOSE_PRECISION",
+                     "BACKEND", "DEVICE",
+                     "KEYPOINT_THRESHOLD", "SKELETON_LINE_WIDTH", "KEYPOINT_RADIUS", "LABEL_FONT_SCALE",
+                     "TRACK_MAX_MISSED_FRAMES", "TRACK_MATCH_THRESHOLD",
+                     "TRACK_VELOCITY_SMOOTHING", "TRACK_RAW_ID_BONUS",
+                     "TRACK_PREDICTED_BOX_WEIGHT", "TRACK_PREDICTION_MAX_FRAMES"]),
 ]
 PATH_KEYS = {"OUTPUT_DIRECTORY"}
 FILE_KEYS = {"INPUT_VIDEO_FILE", "THUMBNAIL_FILE"}
 BOOL_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, bool)}
 INT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, int) and not isinstance(value, bool)}
 FLOAT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, float)}
+NULLABLE_FLOAT_KEYS = {"CAPTURE_FPS"}
 LABELS = {
     "INPUT_VIDEO_FILE": "入力動画",
     "THUMBNAIL_FILE": "撮影日時用サムネイル（任意）",
     "OUTPUT_DIRECTORY": "出力先フォルダ",
+    "CAPTURE_FPS": "撮影FPS（実時間基準・空欄で自動）",
     "YOLO_MODEL": "YOLOモデルサイズ",
     "YOLO_BATCH_SIZE": "YOLOバッチサイズ",
     "POSE_ENGINE": "姿勢推定エンジン",
@@ -208,7 +192,11 @@ LABELS = {
     "VITPOSE_INPUT_SIZE": "ViTPose++入力解像度",
     "VITPOSE_BATCH_SIZE": "ViTPose++バッチサイズ",
     "VITPOSE_FLIP_TEST": "Flip Test（左右反転TTA）",
+    "VITPOSE_PRECISION": "ViTPose++推論精度",
     "DEVICE": "実行デバイス（YOLO・姿勢推定）",
+    "SKELETON_LINE_WIDTH": "骨格線の太さ",
+    "KEYPOINT_RADIUS": "キーポイント円の半径",
+    "LABEL_FONT_SCALE": "ラベル文字サイズ",
 }
 CHOICES = {
     "YOLO_MODEL": ("n", "s", "m", "l", "x"),
@@ -217,6 +205,7 @@ CHOICES = {
     "RTMLIB_POSE_INPUT_SIZE": ("256x192", "384x288"),
     "VITPOSE_MODEL": ("s", "b", "l", "h"),
     "VITPOSE_INPUT_SIZE": ("256x192",),
+    "VITPOSE_PRECISION": ("fp16", "fp32"),
     "DEVICE": ("auto", "cpu", "cuda"),
 }
 
@@ -231,6 +220,26 @@ _REMOVED_RTMLIB_SETTING_KEYS = (
     "RTMLIB_DETECTOR_SCORE_THRESHOLD",
     "RTMLIB_DETECTOR_NMS_THRESHOLD",
     "OUTPUT_YOLO_VIDEO_NAME",
+    "YOLO_TRACK_ID",
+    "CROP_PADDING_RATIO",
+    "TARGET_REACQUIRE_MAX_DISTANCE",
+    "TARGET_REACQUIRE_MIN_IOU",
+    "TRACK_MAX_DISTANCE",
+    "CSV_MAX_PERSONS",
+    "TRACK_CENTER_WEIGHT",
+    "TRACK_KEYPOINT_WEIGHT",
+    "TRACK_POSE_WEIGHT",
+    "TRACK_BBOX_WEIGHT",
+    "TARGET_TRACK_MATCH_THRESHOLD",
+    "TARGET_TRACK_MIN_IOU",
+    "TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING",
+    "TARGET_LOCK_RAW_ID",
+    "POSE_TRACK_KEYPOINT_WEIGHT",
+    "POSE_TRACK_CENTER_WEIGHT",
+    "POSE_TRACK_SHAPE_WEIGHT",
+    "POSE_BOX_IOU_WEIGHT",
+    "POSE_BOX_CENTER_WEIGHT",
+    "POSE_TEMPORAL_WEIGHT",
 )
 
 
@@ -267,11 +276,25 @@ def normalize_legacy_rtmlib_settings(settings: dict) -> dict:
     if folder_name:
         out.setdefault("OUTPUT_CROP_VIDEO_NAME", f"{folder_name}-crop.mp4")
         out.setdefault("OUTPUT_CROP_SKELETON_VIDEO_NAME", f"{folder_name}-crop-skeleton.mp4")
+        out.setdefault("OUTPUT_METADATA_JSON_NAME", f"{folder_name}_metadata.json")
+        out.setdefault("OUTPUT_NPZ_NAME", f"{folder_name}.npz")
+    if "VITPOSE_PRECISION" in out:
+        prec = str(out.get("VITPOSE_PRECISION") or "fp16").strip().lower()
+        out["VITPOSE_PRECISION"] = prec if prec in ("fp16", "fp32") else "fp16"
     return out
 
 
 def build_job_summary(settings: dict) -> dict:
     """Build UI summary fields for a serialized reservation job."""
+    raw_capture_fps = settings.get("CAPTURE_FPS")
+    capture_fps = None
+    if raw_capture_fps not in (None, "", "None", "null", "auto"):
+        try:
+            parsed_fps = float(raw_capture_fps)
+            if math.isfinite(parsed_fps) and parsed_fps > 0:
+                capture_fps = parsed_fps
+        except (ValueError, TypeError):
+            capture_fps = None
     return {
         "pose_engine": normalize_pose_engine(settings.get("POSE_ENGINE", "rtmpose")),
         "pose_model": settings.get("RTMLIB_POSE_MODEL", "x"),
@@ -279,10 +302,10 @@ def build_job_summary(settings: dict) -> dict:
         "vitpose_model": str(settings.get("VITPOSE_MODEL", "h")).lower(),
         "vitpose_input_size": str(settings.get("VITPOSE_INPUT_SIZE", "256x192")),
         "vitpose_flip_test": bool(settings.get("VITPOSE_FLIP_TEST", True)),
+        "vitpose_precision": str(settings.get("VITPOSE_PRECISION", "fp16")).lower(),
+        "capture_fps": capture_fps,
         "yolo_model": settings.get("YOLO_MODEL", "yolo11m.pt"),
         "device": settings.get("DEVICE", "auto"),
-        "track_id": settings.get("YOLO_TRACK_ID"),
-        "csv_max_persons": settings.get("CSV_MAX_PERSONS", 3),
     }
 
 
@@ -297,6 +320,8 @@ def output_names(output_directory: Path) -> dict[str, str]:
         "OUTPUT_CROP_SKELETON_VIDEO_NAME": f"{name}-crop-skeleton.mp4",
         "OUTPUT_CSV_NAME": f"{name}.csv",
         "OUTPUT_METADATA_NAME": f"{name}_metadata.txt",
+        "OUTPUT_METADATA_JSON_NAME": f"{name}_metadata.json",
+        "OUTPUT_NPZ_NAME": f"{name}.npz",
     }
 
 
@@ -322,6 +347,99 @@ def find_input_video() -> Path:
     return matches[0]
 
 
+def probe_capture_fps(input_video: Path) -> tuple[float | None, str | None]:
+    """Probe camera capture FPS metadata tags (exiftool/ffprobe) when container FPS differs from real speed."""
+    tag_candidates = (
+        "CaptureFPS",
+        "RecordFrameRate",
+        "CameraFrameRate",
+        "com.apple.quicktime.camera.frame_rate",
+    )
+    for tag in tag_candidates:
+        try:
+            res = subprocess.run(
+                ["exiftool", "-s3", "-n", f"-{tag}", str(input_video)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            for line in res.stdout.splitlines():
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    val = float(raw)
+                    if math.isfinite(val) and val > 0.0:
+                        return val, f"exiftool:{tag}"
+                except ValueError:
+                    continue
+        except FileNotFoundError:
+            break
+
+    try:
+        res = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags:stream_tags",
+                "-of",
+                "default=noprint_wrappers=1",
+                str(input_video),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in res.stdout.splitlines():
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k_lower = k.strip().lower()
+            if any(
+                token in k_lower
+                for token in (
+                    "camera.frame_rate",
+                    "capturefps",
+                    "capture_fps",
+                    "recordframerate",
+                    "record_frame_rate",
+                )
+            ):
+                try:
+                    val = float(v.strip())
+                    if math.isfinite(val) and val > 0.0:
+                        return val, f"ffprobe:{k.strip()}"
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return None, None
+
+
+def resolve_capture_fps(
+    input_video: Path,
+    playback_fps: float,
+    manual_capture_fps: float | None = None,
+) -> tuple[float, str]:
+    """Resolve real capture FPS using manual override > camera metadata > playback fallback."""
+    if manual_capture_fps is not None:
+        try:
+            manual_val = float(manual_capture_fps)
+            if math.isfinite(manual_val) and manual_val > 0.0:
+                return manual_val, "manual"
+        except (TypeError, ValueError):
+            pass
+
+    probed_fps, _tag_name = probe_capture_fps(input_video)
+    if probed_fps is not None and probed_fps > 0.0:
+        return probed_fps, "metadata"
+
+    fallback = float(playback_fps) if (playback_fps and playback_fps > 0.0) else 30.0
+    return fallback, "container_fallback"
+
+
 def write_video_metadata(
     input_video: Path,
     output_path: Path,
@@ -329,21 +447,50 @@ def write_video_metadata(
     width: int,
     height: int,
     fps: float,
+    *,
+    recorded_at: str | None = None,
+    metadata_total_frames: int | None = None,
+    playback_fps: float | None = None,
+    capture_fps: float | None = None,
+    capture_fps_source: str = "container_fallback",
+    is_vfr: bool | None = None,
+    yolo_model: str | None = None,
+    pose_engine_label: str | None = None,
+    target_stable_id: int | None = None,
 ) -> None:
-    recorded_at = get_recorded_at(input_video)
-    duration_seconds = total_frames / fps if fps > 0 else 0.0
-    
-    output_path.write_text(
-        "元動画情報\n"
-        "====================\n"
-        f"元動画: {input_video.resolve()}\n"
-        f"動画の撮影日時: {recorded_at}\n"
-        f"総フレーム数: {total_frames}\n"
-        f"解像度（横 x 縦）: {width} x {height}\n"
-        f"FPS（1秒あたりのフレーム数）: {fps:.6f}\n"
-        f"動画全体の長さ（秒）: {duration_seconds:.3f}\n",
-        encoding="utf-8",
-    )
+    resolved_recorded_at = recorded_at if recorded_at is not None else get_recorded_at(input_video)
+    eff_playback_fps = float(playback_fps if playback_fps is not None else fps)
+    eff_capture_fps = float(capture_fps if capture_fps is not None else eff_playback_fps)
+    duration_seconds = total_frames / eff_capture_fps if eff_capture_fps > 0 else 0.0
+    container_frames = total_frames if metadata_total_frames is None else metadata_total_frames
+    source_labels = {
+        "manual": "手動指定 (CAPTURE_FPS)",
+        "metadata": "カメラメタデータ自動取得",
+        "container_fallback": "コンテナ再生FPSフォールバック",
+    }
+    vfr_text = "はい (VFR警告)" if is_vfr else ("いいえ (CFR)" if is_vfr is not None else "未計測")
+
+    lines = [
+        "元動画情報",
+        "====================",
+        f"元動画: {input_video.resolve()}",
+        f"動画名: {input_video.name}",
+        f"動画の撮影日時: {resolved_recorded_at}",
+        f"確定実フレーム数: {total_frames}",
+        f"コンテナ情報フレーム数: {container_frames}",
+        f"解像度（横 x 縦）: {width} x {height}",
+        f"実撮影FPS（時間計算基準）: {eff_capture_fps:.6f} ({source_labels.get(capture_fps_source, capture_fps_source)})",
+        f"コンテナ再生FPS: {eff_playback_fps:.6f}",
+        f"VFR検知: {vfr_text}",
+        f"実時間（秒）: {duration_seconds:.3f}",
+    ]
+    if yolo_model:
+        lines.append(f"人物検出AI (YOLO): {yolo_model}")
+    if pose_engine_label:
+        lines.append(f"骨格推定AI: {pose_engine_label}")
+    if target_stable_id is not None:
+        lines.append(f"解析対象トラッキングID: {target_stable_id}")
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def get_recorded_at(input_video: Path) -> str:
@@ -419,115 +566,8 @@ def get_recorded_at(input_video: Path) -> str:
     return "取得不可（動画内に撮影日時メタデータがありません）"
 
 
-def clamp_box(box, width: int, height: int) -> tuple[int, int, int, int]:
-    left, top, right, bottom = box
-    return (
-        max(0, int(left)),
-        max(0, int(top)),
-        min(width, int(right)),
-        min(height, int(bottom)),
-    )
-
-
-def padded_crop_box(box, width: int, height: int) -> tuple[int, int, int, int]:
-    left, top, right, bottom = box
-    box_width = right - left
-    box_height = bottom - top
-    return clamp_box(
-        (
-            left - box_width * CROP_PADDING_RATIO,
-            top - box_height * CROP_PADDING_RATIO,
-            right + box_width * CROP_PADDING_RATIO,
-            bottom + box_height * CROP_PADDING_RATIO,
-        ),
-        width,
-        height,
-    )
-
-
 def box_center(box) -> tuple[float, float]:
     return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
-
-
-def choose_target_yolo_box(boxes, target_track_id, previous_box):
-    candidates = []
-    for index, box in enumerate(boxes):
-        xyxy = tuple(float(value) for value in box.xyxy[0].tolist())
-        track_id = None if box.id is None else int(box.id[0].item())
-        candidates.append({"index": index, "xyxy": xyxy, "track_id": track_id})
-    if target_track_id is not None:
-        for candidate in candidates:
-            if candidate["track_id"] == target_track_id:
-                return candidate
-    if previous_box is None:
-        return None
-    previous_center = box_center(previous_box)
-    recovery_candidates = []
-    for candidate in candidates:
-        center_distance = math.dist(previous_center, box_center(candidate["xyxy"]))
-        overlap = bbox_iou(previous_box, candidate["xyxy"])
-        if (
-            center_distance <= TARGET_REACQUIRE_MAX_DISTANCE
-            or overlap >= TARGET_REACQUIRE_MIN_IOU
-        ):
-            recovery_candidates.append((overlap, -center_distance, candidate))
-    if not recovery_candidates:
-        return None
-    return max(recovery_candidates, key=lambda item: (item[0], item[1]))[2]
-
-
-def pose_match_cost(
-    keypoints,
-    scores,
-    target_center,
-    previous_keypoints,
-    previous_scores,
-) -> float:
-    geometry = get_person_geometry(keypoints, scores)
-    crop_scale = max(
-        math.hypot(
-            geometry["bbox"][2] - geometry["bbox"][0],
-            geometry["bbox"][3] - geometry["bbox"][1],
-        ),
-        1.0,
-    )
-    center_cost = math.dist(geometry["center"], target_center) / crop_scale
-    reliable_indices = [
-        index
-        for index, score in enumerate(scores)
-        if float(score) >= KEYPOINT_THRESHOLD
-        and float(previous_scores[index]) >= KEYPOINT_THRESHOLD
-    ]
-    if not reliable_indices:
-        reliable_indices = list(range(min(len(keypoints), len(previous_keypoints))))
-    keypoint_costs = []
-    shape_costs = []
-    current_center = geometry["center"]
-    previous_geometry = get_person_geometry(previous_keypoints, previous_scores)
-    for index in reliable_indices:
-        current_point = (
-            float(keypoints[index][0]),
-            float(keypoints[index][1]),
-        )
-        previous_point = (
-            float(previous_keypoints[index][0]),
-            float(previous_keypoints[index][1]),
-        )
-        keypoint_costs.append(math.dist(current_point, previous_point) / crop_scale)
-        current_relative = (
-            current_point[0] - current_center[0],
-            current_point[1] - current_center[1],
-        )
-        previous_relative = (
-            previous_point[0] - previous_geometry["center"][0],
-            previous_point[1] - previous_geometry["center"][1],
-        )
-        shape_costs.append(math.dist(current_relative, previous_relative) / crop_scale)
-    return (
-        POSE_TRACK_KEYPOINT_WEIGHT * (sum(keypoint_costs) / len(keypoint_costs))
-        + POSE_TRACK_CENTER_WEIGHT * center_cost
-        + POSE_TRACK_SHAPE_WEIGHT * (sum(shape_costs) / len(shape_costs))
-    )
 
 
 MAX_BATCH_SIZE = 512
@@ -667,374 +707,24 @@ def cap_yolo_batch_by_vram(
     return requested
 
 
-def cap_rtmpose_batch_by_vram(requested: int, device: str, pose_model) -> int:
-    """Cap RTMPose batch size conservatively from remaining free VRAM."""
-    if requested <= 1:
-        return requested
-    mem_info = _get_cuda_free_total_gb(device)
-    if mem_info is None:
-        return requested
-    free_gb, _ = mem_info
-    input_size = getattr(pose_model, "model_input_size", (192, 256))
-    try:
-        in_w, in_h = int(input_size[0]), int(input_size[1])
-    except (TypeError, ValueError, IndexError):
-        in_w, in_h = 192, 256
-    usable_gb = max(0.4, free_gb * 0.85 - 0.4)
-    area_factor = max(1, in_w * in_h) / (192.0 * 256.0)
-    est_gb_per_frame = 0.028 * area_factor
-    max_safe = max(1, int(usable_gb / max(est_gb_per_frame, 1e-4)))
-    if requested > max_safe:
-        print(
-            f"RTMPose: 利用可能VRAM ({free_gb:.1f} GB) に合わせてバッチサイズを "
-            f"{requested} -> {max_safe} に自動調整しました",
-            flush=True,
-        )
-        return max_safe
-    return requested
-
-
-def supports_dynamic_batch(pose_model) -> tuple[bool, object]:
-    """Check whether the loaded pose model ONNX session supports a dynamic batch axis."""
-    session = getattr(pose_model, "session", None)
-    if session is None:
-        return False, "no-onnx-session"
-    try:
-        inputs = session.get_inputs()
-    except Exception:
-        return False, "unknown"
-    if not inputs or not getattr(inputs[0], "shape", None):
-        return False, "unknown"
-    batch_dim = inputs[0].shape[0]
-    if isinstance(batch_dim, int) and batch_dim > 0:
-        return False, batch_dim
-    return True, batch_dim
-
-
-def _ensure_pose_preprocess_ready(pose_model) -> None:
-    """Convert mean/std once so concurrent or repeated preprocess calls avoid re-allocation."""
-    import numpy as np
-
-    if getattr(pose_model, "mean", None) is not None and not isinstance(
-        pose_model.mean, np.ndarray
-    ):
-        pose_model.mean = np.array(pose_model.mean)
-    if getattr(pose_model, "std", None) is not None and not isinstance(
-        pose_model.std, np.ndarray
-    ):
-        pose_model.std = np.array(pose_model.std)
-
-
-def _write_chw_float32_into(preprocessed_img, dest) -> None:
-    """Copy rtmlib RTMPose.preprocess output directly into a pre-allocated (3, H, W) float32 slice."""
-    import numpy as np
-
-    arr = np.asarray(preprocessed_img)
-    if arr.ndim == 4 and arr.shape[0] == 1:
-        arr = arr[0]
-    if arr.ndim == 3 and arr.shape[2] == 3:
-        np.copyto(dest, np.transpose(arr, (2, 0, 1)), casting="unsafe")
-    elif arr.ndim == 3 and arr.shape[0] == 3:
-        np.copyto(dest, arr, casting="unsafe")
-    else:
-        raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
-
-
-def _to_chw_float32(preprocessed_img):
-    """Normalize rtmlib RTMPose.preprocess image output to contiguous (3, H, W) float32."""
-    import numpy as np
-
-    arr = np.asarray(preprocessed_img, dtype=np.float32)
-    if arr.ndim == 4 and arr.shape[0] == 1:
-        arr = arr[0]
-    if arr.ndim == 3 and arr.shape[2] == 3:
-        arr = np.transpose(arr, (2, 0, 1))
-    elif arr.ndim != 3 or arr.shape[0] != 3:
-        raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
-    return np.ascontiguousarray(arr, dtype=np.float32)
-
-
-def _extract_single_pose(keypoints, scores):
-    """Extract 1-person (keypoints, scores) arrays from rtmlib RTMPose output."""
-    import numpy as np
-
-    if keypoints is None or scores is None or len(keypoints) == 0:
-        return None, None
-    kpts_arr = np.asarray(keypoints, dtype=np.float32)
-    scores_arr = np.asarray(scores, dtype=np.float32)
-    if kpts_arr.ndim == 3:
-        kpts_arr = kpts_arr[0]
-    if scores_arr.ndim == 2:
-        scores_arr = scores_arr[0]
-    if len(kpts_arr) == 0:
-        return None, None
-    return [(float(pt[0]), float(pt[1])) for pt in kpts_arr], scores_arr
-
-
-def _clamped_target_box(target_box, width: int, height: int):
-    if target_box is None:
-        return None
-    clamped = clamp_box(target_box, width, height)
-    if clamped[2] <= clamped[0] or clamped[3] <= clamped[1]:
-        return None
-    return [float(clamped[0]), float(clamped[1]), float(clamped[2]), float(clamped[3])]
-
-
-def _prepare_pose_crop(pose_model, frame, clamped_box):
-    """Affine-crop frame for RTMPose and return (preprocessed, crop_bgr, center, scale)."""
-    import numpy as np
-    from rtmlib.tools.pose_estimation.rtmpose import bbox_xyxy2cs, top_down_affine
-
-    _ensure_pose_preprocess_ready(pose_model)
-    center, scale = bbox_xyxy2cs(np.asarray(clamped_box, dtype=np.float32), padding=1.25)
-    crop_bgr, scale = top_down_affine(pose_model.model_input_size, scale, center, frame)
-    preprocessed = crop_bgr
-    if (
-        getattr(pose_model, "mean", None) is not None
-        and getattr(pose_model, "std", None) is not None
-    ):
-        preprocessed = (crop_bgr - pose_model.mean) / pose_model.std
-    return preprocessed, crop_bgr, center, scale
-
-
-def render_pose_on_crop(
-    crop_bgr,
-    restored_keypoints,
-    pose_scores,
-    center,
-    scale,
-    model_input_size,
-):
-    """Draw skeleton only (no text overlays) onto the RTMPose input crop image."""
-    import numpy as np
-
-    if crop_bgr is None:
-        return None
-    annotated = crop_bgr.copy()
-    if restored_keypoints is None or pose_scores is None:
-        return annotated
-    scale_arr = np.asarray(scale, dtype=np.float32)
-    center_arr = np.asarray(center, dtype=np.float32)
-    size_arr = np.asarray(model_input_size, dtype=np.float32)
-    safe_scale = np.where(scale_arr == 0, 1.0, scale_arr)
-    crop_kpts = (
-        (np.asarray(restored_keypoints, dtype=np.float32) - (center_arr - scale_arr / 2.0))
-        / safe_scale
-        * size_arr
-    )
-    return draw_skeleton(
-        annotated,
-        crop_kpts[None, :, :],
-        np.asarray([pose_scores], dtype=np.float32),
-        kpt_thr=KEYPOINT_THRESHOLD,
-    )
-
-
-def infer_pose_single(pose_model, frame, target_box, *, return_crop: bool = False):
-    """Run RTMPose directly on target_box for a single frame."""
-    height, width = frame.shape[:2]
-    clamped = _clamped_target_box(target_box, width, height)
-    if clamped is None:
-        return ((None, None), None) if return_crop else (None, None)
-    if return_crop:
-        preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
-            pose_model, frame, clamped
-        )
-        outputs = pose_model.inference(preprocessed)
-        keypoints, scores = pose_model.postprocess(outputs, center, scale)
-        kpts, scs = _extract_single_pose(keypoints, scores)
-        return (kpts, scs), (crop_bgr, center, scale)
-    keypoints, scores = pose_model(frame, bboxes=[clamped])
-    return _extract_single_pose(keypoints, scores)
-
-
-def infer_pose_batch(
-    pose_model,
-    batch_items,
-    fixed_batch_size: int | None = None,
-    batch_buffer: dict | None = None,
-    *,
-    return_crop: bool = False,
-):
-    """Run batched RTMPose inference via ONNX Runtime for [(frame, target_box), ...].
-
-    When ``fixed_batch_size`` is set above ``len(valid)``, the tensor is padded to
-    ``fixed_batch_size`` so ONNX Runtime always sees a constant input shape.
-    """
-    import numpy as np
-
-    if not batch_items:
-        return []
-    if len(batch_items) == 1 and (fixed_batch_size is None or fixed_batch_size <= 1):
-        frame, target_box = batch_items[0]
-        return [
-            infer_pose_single(
-                pose_model, frame, target_box, return_crop=return_crop
-            )
-        ]
-
-    _ensure_pose_preprocess_ready(pose_model)
-
-    prepared = []
-    valid_metas = []
-    batch_tensor = None
-    tensor_idx = 0
-    target_cap = max(len(batch_items), fixed_batch_size or 0)
-
-    def _ensure_buffer(sample_h: int, sample_w: int):
-        nonlocal batch_tensor
-        if batch_buffer is not None:
-            buf = batch_buffer.get("tensor")
-            if buf is None or buf.shape != (target_cap, 3, sample_h, sample_w):
-                buf = np.empty((target_cap, 3, sample_h, sample_w), dtype=np.float32)
-                batch_buffer["tensor"] = buf
-            batch_tensor = buf
-        else:
-            batch_tensor = np.empty((target_cap, 3, sample_h, sample_w), dtype=np.float32)
-
-    for frame, target_box in batch_items:
-        height, width = frame.shape[:2]
-        clamped = _clamped_target_box(target_box, width, height)
-        if clamped is None:
-            prepared.append(None)
-            continue
-        if return_crop:
-            preprocessed, crop_bgr, center, scale = _prepare_pose_crop(
-                pose_model, frame, clamped
-            )
-            crop_info = (crop_bgr, center, scale)
-        else:
-            preprocessed, center, scale = pose_model.preprocess(frame, clamped)
-            crop_info = None
-        arr = np.asarray(preprocessed)
-        if arr.ndim == 4 and arr.shape[0] == 1:
-            arr = arr[0]
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            sample_h, sample_w = arr.shape[0], arr.shape[1]
-        elif arr.ndim == 3 and arr.shape[0] == 3:
-            sample_h, sample_w = arr.shape[1], arr.shape[2]
-        else:
-            raise ValueError(f"Unexpected preprocessed RTMPose shape: {arr.shape}")
-
-        if batch_tensor is None:
-            _ensure_buffer(sample_h, sample_w)
-        _write_chw_float32_into(arr, batch_tensor[tensor_idx])
-        tensor_idx += 1
-        meta = (center, scale, crop_info)
-        valid_metas.append(meta)
-        prepared.append(meta)
-
-    valid_count = len(valid_metas)
-    if valid_count == 0 or batch_tensor is None:
-        empty_item = ((None, None), None) if return_crop else (None, None)
-        return [empty_item for _ in batch_items]
-
-    run_count = fixed_batch_size if (fixed_batch_size and fixed_batch_size >= valid_count) else valid_count
-    if run_count > valid_count:
-        batch_tensor[valid_count:run_count] = batch_tensor[0]
-    feed_tensor = batch_tensor if run_count == batch_tensor.shape[0] else batch_tensor[:run_count]
-
-    session = pose_model.session
-    input_name = session.get_inputs()[0].name
-    output_names = [out.name for out in session.get_outputs()]
-    raw_outputs = session.run(output_names, {input_name: feed_tensor})
-    if run_count > valid_count:
-        raw_outputs = [out[:valid_count] for out in raw_outputs]
-
-    # Try vectorized batch postprocessing across all valid items at once.
-    valid_results = None
-    if len(raw_outputs) == 2 and valid_count > 1:
-        try:
-            centers = np.asarray([m[0] for m in valid_metas])[:, None, :]
-            scales = np.asarray([m[1] for m in valid_metas])[:, None, :]
-            kpts_batch, scores_batch = pose_model.postprocess(raw_outputs, centers, scales)
-            kpts_arr = np.asarray(kpts_batch, dtype=np.float32)
-            scores_arr = np.asarray(scores_batch, dtype=np.float32)
-            if kpts_arr.ndim == 3 and kpts_arr.shape[0] == valid_count:
-                valid_results = [
-                    ([(float(pt[0]), float(pt[1])) for pt in kpts_arr[i]], scores_arr[i])
-                    for i in range(valid_count)
-                ]
-        except Exception:
-            valid_results = None
-
-    if valid_results is None:
-        valid_results = []
-        for idx, (center, scale, _crop_info) in enumerate(valid_metas):
-            item_outputs = [out[idx : idx + 1] for out in raw_outputs]
-            kpts, scs = pose_model.postprocess(item_outputs, center, scale)
-            valid_results.append(_extract_single_pose(kpts, scs))
-
-    results = []
-    valid_iter = iter(valid_results)
-    for meta in prepared:
-        if meta is None:
-            results.append(((None, None), None) if return_crop else (None, None))
-        else:
-            pose_pair = next(valid_iter)
-            if return_crop:
-                results.append((pose_pair, meta[2]))
-            else:
-                results.append(pose_pair)
-    return results
-
-
 def annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores) -> None:
-    """Draw skeleton on the padded crop region of frame in-place."""
+    """Draw skeleton directly onto frame in-place without sub-region cropping."""
     import numpy as np
 
-    if restored_keypoints is None or pose_scores is None or target_box is None:
+    if restored_keypoints is None or pose_scores is None:
         return
-    height, width = frame.shape[:2]
-    crop_left, crop_top, crop_right, crop_bottom = padded_crop_box(
-        target_box, width, height
-    )
-    crop = frame[crop_top:crop_bottom, crop_left:crop_right]
-    if crop.size == 0:
-        return
-    local_kpts = np.asarray(
-        [[(float(x) - crop_left, float(y) - crop_top) for x, y in restored_keypoints]],
-        dtype=np.float32,
-    )
-    local_scores = np.asarray([pose_scores], dtype=np.float32)
-    annotated_crop = draw_pose_skeleton(
-        crop.copy(),
-        local_kpts,
-        local_scores,
+    kpts_arr = np.asarray([restored_keypoints], dtype=np.float32)
+    scores_arr = np.asarray([pose_scores], dtype=np.float32)
+    annotated = draw_pose_skeleton(
+        frame,
+        kpts_arr,
+        scores_arr,
         kpt_thr=KEYPOINT_THRESHOLD,
+        skeleton_line_width=int(globals().get("SKELETON_LINE_WIDTH", 2)),
+        keypoint_radius=int(globals().get("KEYPOINT_RADIUS", 4)),
     )
-    frame[crop_top:crop_bottom, crop_left:crop_right] = annotated_crop
-
-
-def pose_from_crop(pose_model, frame, target_box, previous_keypoints=None, previous_scores=None):
-    """Run RTMPose directly on YOLO target_box and draw skeleton onto frame."""
-    restored_keypoints, pose_scores = infer_pose_single(pose_model, frame, target_box)
-    if restored_keypoints is None:
-        return None, None, None
-    annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
-    height, width = frame.shape[:2]
-    return restored_keypoints, pose_scores, padded_crop_box(target_box, width, height)
-
-
-def get_person_geometry(person_keypoints, person_scores) -> dict:
-    points = [
-        (float(point[0]), float(point[1]))
-        for point, score in zip(person_keypoints, person_scores)
-        if float(score) >= KEYPOINT_THRESHOLD
-    ]
-    if len(points) < 3:
-        points = [(float(point[0]), float(point[1])) for point in person_keypoints]
-    min_x = min(point[0] for point in points)
-    max_x = max(point[0] for point in points)
-    min_y = min(point[1] for point in points)
-    max_y = max(point[1] for point in points)
-    return {
-        "center": (
-            sum(point[0] for point in points) / len(points),
-            sum(point[1] for point in points) / len(points),
-        ),
-        "bbox": (min_x, min_y, max_x, max_y),
-    }
+    if annotated is not None and annotated is not frame:
+        np.copyto(frame, annotated)
 
 
 def bbox_iou(first, second) -> float:
@@ -1049,144 +739,14 @@ def bbox_iou(first, second) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def get_match_cost(track, keypoints, scores, geometry) -> float:
-    elapsed_frames = track["missed_frames"] + 1
-    predicted_center = (
-        track["center"][0] + track["velocity"][0] * elapsed_frames,
-        track["center"][1] + track["velocity"][1] * elapsed_frames,
-    )
-    center_scale = max(
-        math.hypot(
-            track["bbox"][2] - track["bbox"][0],
-            track["bbox"][3] - track["bbox"][1],
-        ),
-        1.0,
-    )
-    center_cost = math.dist(predicted_center, geometry["center"]) / center_scale
-
-    reliable_indices = [
-        index for index, score in enumerate(scores)
-        if float(score) >= KEYPOINT_THRESHOLD
-    ]
-    if not reliable_indices:
-        reliable_indices = list(range(len(keypoints)))
-    keypoint_distances = []
-    pose_distances = []
-    for index in reliable_indices:
-        current = (float(keypoints[index][0]), float(keypoints[index][1]))
-        previous = track["keypoints"][index]
-        predicted = (
-            previous[0] + track["velocity"][0] * elapsed_frames,
-            previous[1] + track["velocity"][1] * elapsed_frames,
-        )
-        keypoint_distances.append(math.dist(current, predicted) / center_scale)
-        current_relative = (
-            current[0] - geometry["center"][0],
-            current[1] - geometry["center"][1],
-        )
-        previous_relative = (
-            previous[0] - track["center"][0],
-            previous[1] - track["center"][1],
-        )
-        pose_distances.append(math.dist(current_relative, previous_relative) / center_scale)
-    keypoint_cost = sum(keypoint_distances) / len(keypoint_distances)
-    pose_cost = sum(pose_distances) / len(pose_distances)
-    bbox_cost = 1.0 - bbox_iou(track["bbox"], geometry["bbox"])
-    return (
-        TRACK_CENTER_WEIGHT * center_cost
-        + TRACK_KEYPOINT_WEIGHT * keypoint_cost
-        + TRACK_POSE_WEIGHT * pose_cost
-        + TRACK_BBOX_WEIGHT * bbox_cost
-    )
-
-
-def assign_person_ids(keypoints, scores, tracks, next_person_id):
-    geometries = [
-        get_person_geometry(person_keypoints, person_scores)
-        for person_keypoints, person_scores in zip(keypoints, scores)
-    ]
-    for track in tracks.values():
-        track["missed_frames"] += 1
-
-    possible_matches = []
-    for detection_index, (person_keypoints, person_scores, geometry) in enumerate(
-        zip(keypoints, scores, geometries)
-    ):
-        for person_id, track in tracks.items():
-            center_distance = math.dist(
-                geometry["center"],
-                (
-                    track["center"][0] + track["velocity"][0],
-                    track["center"][1] + track["velocity"][1],
-                ),
-            )
-            if center_distance <= TRACK_MAX_DISTANCE * (track["missed_frames"] + 1):
-                cost = get_match_cost(track, person_keypoints, person_scores, geometry)
-                if cost <= TRACK_MATCH_THRESHOLD:
-                    possible_matches.append((cost, detection_index, person_id))
-
-    assigned_detections = set()
-    assigned_ids = set()
-    detection_ids = [None] * len(geometries)
-    for _, detection_index, person_id in sorted(possible_matches):
-        if detection_index in assigned_detections or person_id in assigned_ids:
-            continue
-        detection_ids[detection_index] = person_id
-        assigned_detections.add(detection_index)
-        assigned_ids.add(person_id)
-
-    for detection_index, geometry in enumerate(geometries):
-        person_id = detection_ids[detection_index]
-        if person_id is None:
-            person_id = next_person_id
-            next_person_id += 1
-            detection_ids[detection_index] = person_id
-        center = geometry["center"]
-        previous_track = tracks.get(person_id)
-        velocity = (0.0, 0.0)
-        if previous_track is not None and previous_track["missed_frames"] == 1:
-            measured_velocity = (
-                center[0] - previous_track["center"][0],
-                center[1] - previous_track["center"][1],
-            )
-            velocity = (
-                TRACK_VELOCITY_SMOOTHING * previous_track["velocity"][0]
-                + (1 - TRACK_VELOCITY_SMOOTHING) * measured_velocity[0],
-                TRACK_VELOCITY_SMOOTHING * previous_track["velocity"][1]
-                + (1 - TRACK_VELOCITY_SMOOTHING) * measured_velocity[1],
-            )
-        tracks[person_id] = {
-            "center": center,
-            "bbox": geometry["bbox"],
-            "keypoints": [
-                (float(point[0]), float(point[1])) for point in keypoints[detection_index]
-            ],
-            "velocity": velocity,
-            "missed_frames": 0,
-        }
-
-    expired_ids = [
-        person_id
-        for person_id, track in tracks.items()
-        if track["missed_frames"] > TRACK_MAX_MISSED_FRAMES
-    ]
-    for person_id in expired_ids:
-        del tracks[person_id]
-
-    return detection_ids, next_person_id
-
-
 def get_csv_fieldnames() -> list[str]:
-    fieldnames = ["frame", "time_seconds"]
-    for person_index in range(CSV_MAX_PERSONS):
-        prefix = f"person_{person_index}"
-        fieldnames.append(f"{prefix}_id")
-        for name in COCO_KEYPOINTS:
-            fieldnames.extend([
-                f"{prefix}_{name}_x",
-                f"{prefix}_{name}_y",
-                f"{prefix}_{name}_score",
-            ])
+    fieldnames = ["frame", "time_seconds", "person_0_id"]
+    for name in COCO_KEYPOINTS:
+        fieldnames.extend([
+            f"person_0_{name}_x",
+            f"person_0_{name}_y",
+            f"person_0_{name}_score",
+        ])
     return fieldnames
 
 
@@ -1195,19 +755,14 @@ def make_csv_row(frame_data: dict) -> dict:
         "frame": frame_data["frame"],
         "time_seconds": frame_data["time_seconds"],
     }
-    for person_index in range(CSV_MAX_PERSONS):
-        prefix = f"person_{person_index}"
-        person = (
-            frame_data["persons"][person_index]
-            if person_index < len(frame_data["persons"])
-            else None
-        )
-        row[f"{prefix}_id"] = "" if person is None else person["person_id"]
-        for name in COCO_KEYPOINTS:
-            keypoint = None if person is None else person[name]
-            row[f"{prefix}_{name}_x"] = "" if keypoint is None else keypoint["x"]
-            row[f"{prefix}_{name}_y"] = "" if keypoint is None else keypoint["y"]
-            row[f"{prefix}_{name}_score"] = "" if keypoint is None else keypoint["score"]
+    persons = frame_data.get("persons") or []
+    person = persons[0] if persons else None
+    row["person_0_id"] = "" if person is None else person["person_id"]
+    for name in COCO_KEYPOINTS:
+        keypoint = None if person is None else person[name]
+        row[f"person_0_{name}_x"] = "" if keypoint is None else keypoint["x"]
+        row[f"person_0_{name}_y"] = "" if keypoint is None else keypoint["y"]
+        row[f"person_0_{name}_score"] = "" if keypoint is None else keypoint["score"]
     return row
 
 
@@ -1251,7 +806,11 @@ def yolo_box_cost(
     return (
         center_distance / scale
         + TRACK_PREDICTED_BOX_WEIGHT * (1.0 - bbox_iou(predicted_box, box))
-        - (TRACK_RAW_ID_BONUS if raw_track_id == track["raw_track_id"] else 0.0)
+        - (
+            TRACK_RAW_ID_BONUS
+            if raw_track_id is not None and raw_track_id == track["raw_track_id"]
+            else 0.0
+        )
     )
 
 
@@ -1259,7 +818,6 @@ def stabilize_yolo_ids(
     boxes,
     tracks: dict,
     next_id: int,
-    protected_stable_id: int | None = None,
 ):
     detections = [
         {
@@ -1268,38 +826,22 @@ def stabilize_yolo_ids(
         }
         for box in boxes
     ]
-    for track in tracks.values():
-        track["missed_frames"] += 1
 
     matches = []
     for detection_index, detection in enumerate(detections):
         for stable_id, track in tracks.items():
-            if track["missed_frames"] <= TRACK_MAX_MISSED_FRAMES + 1:
+            if track["missed_frames"] <= TRACK_MAX_MISSED_FRAMES:
                 cost = yolo_box_cost(
                     track,
                     detection["bbox"],
                     detection["raw_track_id"],
                 )
-                if stable_id == protected_stable_id:
-                    predicted_box = predict_track_box(track)
-                    if (
-                        TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING
-                        and track["missed_frames"] > 0
-                        and detection["raw_track_id"] != track["raw_track_id"]
-                    ):
-                        continue
-                    protected_match = (
-                        cost <= TARGET_TRACK_MATCH_THRESHOLD
-                        and bbox_iou(predicted_box, detection["bbox"])
-                        >= TARGET_TRACK_MIN_IOU
-                    )
-                    if not protected_match and (
-                        detection["raw_track_id"] != track["raw_track_id"]
-                    ):
-                        continue
                 if (
                     cost <= TRACK_MATCH_THRESHOLD
-                    or detection["raw_track_id"] == track["raw_track_id"]
+                    or (
+                        detection["raw_track_id"] is not None
+                        and detection["raw_track_id"] == track["raw_track_id"]
+                    )
                 ):
                     matches.append((cost, detection_index, stable_id))
 
@@ -1321,18 +863,25 @@ def stabilize_yolo_ids(
         detection_box = detection["bbox"]
         center = box_center(detection_box)
         previous = tracks.get(stable_id)
-        velocity = (0.0, 0.0)
-        if previous is not None and previous["missed_frames"] == 1:
-            measured = (
-                center[0] - previous["center"][0],
-                center[1] - previous["center"][1],
-            )
-            velocity = (
-                TRACK_VELOCITY_SMOOTHING * previous["velocity"][0]
-                + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[0],
-                TRACK_VELOCITY_SMOOTHING * previous["velocity"][1]
-                + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[1],
-            )
+        if previous is None:
+            velocity = (0.0, 0.0)
+        else:
+            prev_missed = previous["missed_frames"]
+            dt = prev_missed + 1
+            if prev_missed == 0:
+                measured = (
+                    (center[0] - previous["center"][0]) / dt,
+                    (center[1] - previous["center"][1]) / dt,
+                )
+                velocity = (
+                    TRACK_VELOCITY_SMOOTHING * previous["velocity"][0]
+                    + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[0],
+                    TRACK_VELOCITY_SMOOTHING * previous["velocity"][1]
+                    + (1.0 - TRACK_VELOCITY_SMOOTHING) * measured[1],
+                )
+            else:
+                # Preserve velocity direction/magnitude across brief detection gaps (Option A).
+                velocity = previous["velocity"]
         tracks[stable_id] = {
             "center": center,
             "bbox": detection_box,
@@ -1340,14 +889,14 @@ def stabilize_yolo_ids(
             "velocity": velocity,
             "missed_frames": 0,
         }
+        assigned_ids.add(stable_id)
         stable_ids[detection_index] = stable_id
 
-    for stable_id in [
-        stable_id
-        for stable_id, track in tracks.items()
-        if track["missed_frames"] > TRACK_MAX_MISSED_FRAMES
-    ]:
-        del tracks[stable_id]
+    for stable_id in list(tracks.keys()):
+        if stable_id not in assigned_ids:
+            tracks[stable_id]["missed_frames"] += 1
+            if tracks[stable_id]["missed_frames"] > TRACK_MAX_MISSED_FRAMES:
+                del tracks[stable_id]
 
     return [
         {
@@ -1359,7 +908,7 @@ def stabilize_yolo_ids(
     ], next_id
 
 
-def select_moving_target_id(frame_detections, total_frames):
+def _select_moving_target_id_legacy(frame_detections, total_frames):
     trajectories = {}
     for frame_index, detections in enumerate(frame_detections):
         for detection in detections:
@@ -1393,6 +942,102 @@ def select_moving_target_id(frame_detections, total_frames):
     return max(candidates)[3]
 
 
+def _select_moving_target_id_long_jump(frame_detections, total_frames):
+    """Select long-jump athlete using height-normalized speed, directional run, and foreground scale."""
+    trajectories: dict = {}
+    for frame_index, detections in enumerate(frame_detections):
+        for detection in detections:
+            stable_id = detection["stable_id"]
+            bbox = detection["bbox"]
+            cx, cy = box_center(bbox)
+            bh = max(1.0, float(bbox[3]) - float(bbox[1]))
+            trajectories.setdefault(stable_id, []).append((frame_index, cx, cy, bh))
+
+    eligible: list[dict] = []
+    max_median_h = 1.0
+    for stable_id, obs in trajectories.items():
+        if len(obs) < TARGET_SELECTION_MIN_FRAMES:
+            continue
+        heights = sorted(item[3] for item in obs)
+        median_h = heights[len(heights) // 2]
+        max_median_h = max(max_median_h, median_h)
+
+        # Sliding-window horizontal & 2D approach speeds normalized by median person height
+        win_speeds: list[float] = []
+        win_dx_sum = 0.0
+        win = min(5, max(1, len(obs) - 1))
+        for i in range(len(obs) - win):
+            dt = max(1, obs[i + win][0] - obs[i][0])
+            dx = obs[i + win][1] - obs[i][1]
+            dy = obs[i + win][2] - obs[i][2]
+            win_speeds.append((math.hypot(dx, dy) / dt) / median_h)
+
+        abs_dx_total = sum(abs(b[1] - a[1]) for a, b in zip(obs, obs[1:]))
+        path_length = sum(
+            math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(obs, obs[1:])
+        )
+        net_dx = abs(obs[-1][1] - obs[0][1])
+        net_disp = math.hypot(obs[-1][1] - obs[0][1], obs[-1][2] - obs[0][2])
+
+        if win_speeds:
+            sorted_speeds = sorted(win_speeds)
+            p85_idx = min(len(sorted_speeds) - 1, int(len(sorted_speeds) * 0.85))
+            burst_speed_norm = sorted_speeds[p85_idx]
+        else:
+            burst_speed_norm = 0.0
+
+        # Suppress stationary jitter & tiny oscillatory motions by measuring unidirectional progress
+        directional_purity = net_dx / max(abs_dx_total, median_h * 0.5, 1.0)
+        net_disp_norm = net_disp / median_h
+        coverage = len(obs) / max(total_frames, 1)
+        win_dx_sum = path_length / median_h
+
+        eligible.append({
+            "stable_id": stable_id,
+            "median_h": median_h,
+            "burst_speed_norm": burst_speed_norm,
+            "directional_purity": directional_purity,
+            "net_disp_norm": net_disp_norm,
+            "path_norm": win_dx_sum,
+            "coverage": coverage,
+        })
+
+    if not eligible:
+        return max(
+            trajectories,
+            key=lambda stable_id: len(trajectories[stable_id]),
+            default=None,
+        )
+
+    candidates = []
+    cov_w = float(globals().get("TARGET_SELECTION_COVERAGE_WEIGHT", 0.5))
+    for item in eligible:
+        size_weight = 0.5 + 0.5 * (item["median_h"] / max_median_h)
+        motion_core = (
+            item["path_norm"] * (1.0 - cov_w)
+            + item["net_disp_norm"] * cov_w
+        )
+        directional_factor = 0.35 + 0.65 * min(1.0, item["directional_purity"])
+        speed_factor = 1.0 + min(4.0, item["burst_speed_norm"] * 12.0)
+        coverage_factor = 0.5 + 0.5 * item["coverage"]
+        score = (
+            motion_core
+            * directional_factor
+            * speed_factor
+            * size_weight
+            * coverage_factor
+        )
+        candidates.append((score, item["coverage"], item["net_disp_norm"], item["stable_id"]))
+    return max(candidates)[3]
+
+
+def select_moving_target_id(frame_detections, total_frames):
+    strategy = str(globals().get("TARGET_SELECTION_STRATEGY", "long_jump")).strip().lower()
+    if strategy == "legacy":
+        return _select_moving_target_id_legacy(frame_detections, total_frames)
+    return _select_moving_target_id_long_jump(frame_detections, total_frames)
+
+
 def fill_target_box_gaps(frame_detections, target_stable_id):
     target_boxes = [
         next(
@@ -1412,16 +1057,6 @@ def fill_target_box_gaps(frame_detections, target_stable_id):
     if not observed:
         return target_boxes
 
-    first = observed[0]
-    last = observed[-1]
-    for index in range(max(0, first - TARGET_BOX_FILL_MAX_FRAMES), first):
-        target_boxes[index] = target_boxes[first]
-    for index in range(
-        last + 1,
-        min(len(target_boxes), last + TARGET_BOX_FILL_MAX_FRAMES + 1),
-    ):
-        target_boxes[index] = target_boxes[last]
-
     for left_index, right_index in zip(observed, observed[1:]):
         gap = right_index - left_index - 1
         if gap <= 0 or gap > TARGET_BOX_FILL_MAX_FRAMES:
@@ -1435,6 +1070,27 @@ def fill_target_box_gaps(frame_detections, target_stable_id):
                 for left_value, right_value in zip(left_box, right_box)
             )
     return target_boxes
+
+
+def compute_target_box_states(
+    frame_detections: list,
+    target_boxes: list,
+    target_stable_id: int | None,
+) -> list[int]:
+    """Classify each frame box as 0 (none), 1 (YOLO observed), or 2 (interpolated)."""
+    states: list[int] = []
+    for idx, target_box in enumerate(target_boxes):
+        if target_box is None:
+            states.append(0)
+            continue
+        if target_stable_id is not None and idx < len(frame_detections):
+            observed_here = any(
+                d.get("stable_id") == target_stable_id for d in frame_detections[idx]
+            )
+            states.append(1 if observed_here else 2)
+        else:
+            states.append(1)
+    return states
 
 
 def _is_torch_cuda_available(torch_mod) -> bool:
@@ -1498,6 +1154,7 @@ def _active_pose_settings_from_globals() -> dict:
         "VITPOSE_MODEL": globals().get("VITPOSE_MODEL", "h"),
         "VITPOSE_INPUT_SIZE": globals().get("VITPOSE_INPUT_SIZE", "256x192"),
         "VITPOSE_FLIP_TEST": globals().get("VITPOSE_FLIP_TEST", True),
+        "VITPOSE_PRECISION": globals().get("VITPOSE_PRECISION", "fp16"),
     }
 
 
@@ -1507,20 +1164,6 @@ def create_pose_estimator_from_globals(device: str) -> BasePoseEstimator:
     estimator = _factory_create_pose_estimator(settings, device)
     print(f"姿勢モデル: {estimator.display_name}", flush=True)
     return estimator
-
-
-def create_pose_model(device: str):
-    """Backward-compatible helper returning the underlying rtmlib RTMPose instance."""
-    from pose_estimators.rtmpose import RTMPoseEstimator
-
-    estimator = RTMPoseEstimator(
-        pose_model=RTMLIB_POSE_MODEL,
-        pose_input_size=RTMLIB_POSE_INPUT_SIZE,
-        backend=BACKEND,
-        device=device,
-    )
-    print(f"姿勢モデル: {estimator.display_name}", flush=True)
-    return estimator.raw_model
 
 
 MPEG4_MAX_TIMEBASE_DENOMINATOR = 65535
@@ -1573,6 +1216,7 @@ class AsyncFrameReader:
         self._stop_event = threading.Event()
         self._error: BaseException | None = None
         self._eof = False
+        self.frame_timestamps_ms: list[float] = []
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -1598,6 +1242,11 @@ class AsyncFrameReader:
                 success, frame = self._capture.read()
                 if not success:
                     break
+                try:
+                    pts_ms = float(self._capture.get(cv2.CAP_PROP_POS_MSEC))
+                except Exception:
+                    pts_ms = -1.0
+                self.frame_timestamps_ms.append(pts_ms if math.isfinite(pts_ms) else -1.0)
                 read_count += 1
                 if not self._put_with_stop(frame):
                     break
@@ -1849,6 +1498,84 @@ class WorkerModelCache:
             self.release_yolo()
 
 
+_LAST_VFR_INFO: dict[str, dict] = {}
+
+
+def _analyze_pts_timestamps(
+    pts_ms_list: list[float],
+    container_fps: float,
+) -> tuple[bool, float]:
+    """Detect variable frame rate (VFR) and compute effective playback FPS from frame PTS (ms)."""
+    import numpy as np
+
+    base_fps = float(container_fps) if (container_fps and container_fps > 0.0) else 30.0
+    valid_pts = [p for p in pts_ms_list if p is not None and p >= 0.0]
+    if len(valid_pts) < 6:
+        return False, base_fps
+
+    # Ignore leading zeros if VideoCapture yields 0.0 on all synthetic/unindexed frames
+    diffs = np.diff(np.asarray(valid_pts, dtype=np.float64))
+    non_zero_diffs = diffs[diffs > 0.0]
+    if len(non_zero_diffs) < 5:
+        return False, base_fps
+
+    non_monotonic = bool(np.any(diffs < -1e-3))
+    mean_dt = float(np.mean(non_zero_diffs))
+    median_dt = float(np.median(non_zero_diffs))
+    if median_dt <= 0.0:
+        return non_monotonic, base_fps
+
+    effective_fps = 1000.0 / median_dt
+    rel_std = float(np.std(non_zero_diffs) / max(mean_dt, 1e-6))
+    fps_drift = abs(effective_fps - base_fps) / max(base_fps, 1e-6)
+    is_vfr = non_monotonic or rel_std > 0.08 or fps_drift > 0.05
+    if fps_drift > 0.05 and math.isfinite(effective_fps) and effective_fps > 0.0:
+        return is_vfr, effective_fps
+    return is_vfr, base_fps
+
+
+def _create_synced_tracker_yaml(tracker_spec: str, yolo_confidence: float) -> tuple[str, Path | None]:
+    """Create a temp tracker YAML syncing track_high_thresh/new_track_thresh with YOLO_CONFIDENCE."""
+    try:
+        import yaml
+    except ImportError:
+        return tracker_spec, None
+
+    cfg_path: Path | None = None
+    candidate = Path(tracker_spec)
+    if candidate.is_file():
+        cfg_path = candidate
+    else:
+        try:
+            import ultralytics
+
+            pkg_tracker = Path(ultralytics.__file__).resolve().parent / "cfg" / "trackers" / tracker_spec
+            if pkg_tracker.is_file():
+                cfg_path = pkg_tracker
+        except Exception:
+            cfg_path = None
+
+    if cfg_path is None:
+        return tracker_spec, None
+
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return tracker_spec, None
+        conf = max(0.01, min(0.95, float(yolo_confidence)))
+        data["track_high_thresh"] = conf
+        data["new_track_thresh"] = conf
+        orig_low = float(data.get("track_low_thresh", 0.1))
+        data["track_low_thresh"] = min(orig_low, conf)
+        fd, tmp_name = tempfile.mkstemp(prefix="yolo_tracker_", suffix=".yaml")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        return str(tmp_path), tmp_path
+    except Exception:
+        return tracker_spec, None
+
+
 def run_yolo_pass(
     input_video: Path,
     progress_total_frames=0,
@@ -1861,7 +1588,8 @@ def run_yolo_pass(
         raise RuntimeError(f"Could not open input video: {input_video.resolve()}")
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    container_fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = container_fps
     total_frames = progress_total_frames or int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
     configure_cuda_memory_fraction(device)
@@ -1877,18 +1605,20 @@ def run_yolo_pass(
     print(f"YOLOバッチサイズ: {effective_batch}", flush=True)
     tracks = {}
     next_id = 0
-    target_stable_id = YOLO_TRACK_ID
+    target_stable_id = None
     frame_detections = []
     processed_frames = 0
     last_progress = -1
     print("PROGRESS:0:YOLO", flush=True)
+
+    tracker_arg, temp_tracker_path = _create_synced_tracker_yaml(YOLO_TRACKER, YOLO_CONFIDENCE)
 
     def _track_single(single_frame):
         return detector.track(
             single_frame,
             device=device,
             persist=True,
-            tracker=YOLO_TRACKER,
+            tracker=tracker_arg,
             imgsz=YOLO_IMAGE_SIZE,
             conf=YOLO_CONFIDENCE,
             iou=YOLO_IOU,
@@ -1924,7 +1654,7 @@ def run_yolo_pass(
                     frames_chunk,
                     device=device,
                     persist=True,
-                    tracker=YOLO_TRACKER,
+                    tracker=tracker_arg,
                     imgsz=YOLO_IMAGE_SIZE,
                     conf=YOLO_CONFIDENCE,
                     iou=YOLO_IOU,
@@ -1969,7 +1699,10 @@ def run_yolo_pass(
         onnx_already_cached = has_cached_vitpose_onnx(
             str(globals().get("VITPOSE_MODEL", "h")),
             str(globals().get("VITPOSE_INPUT_SIZE", "256x192")),
-            fp16=str(effective_pose_device).lower().startswith("cuda"),
+            fp16=(
+                str(effective_pose_device).lower().startswith("cuda")
+                and str(globals().get("VITPOSE_PRECISION", "fp16")).strip().lower() == "fp16"
+            ),
         )
         if not pose_already_cached and not onnx_already_cached:
             from pose_estimators.vitpose import preimport_vitpose_dependencies
@@ -1982,6 +1715,7 @@ def run_yolo_pass(
             preimport_thread.start()
     try:
         while True:
+            _check_cancel_requested()
             batch_frames = reader.read_batch(effective_batch)
             if not batch_frames:
                 break
@@ -1990,6 +1724,8 @@ def run_yolo_pass(
         try:
             reader.close()
         finally:
+            if temp_tracker_path is not None:
+                temp_tracker_path.unlink(missing_ok=True)
             if preimport_thread is not None:
                 preimport_thread.join()
             capture.release()
@@ -1998,6 +1734,19 @@ def run_yolo_pass(
             else:
                 del detector
                 _clear_cuda_cache()
+    is_vfr, effective_fps = _analyze_pts_timestamps(reader.frame_timestamps_ms, container_fps)
+    fps = effective_fps
+    if is_vfr:
+        print(
+            f"警告: 可変フレームレート(VFR)の可能性があります "
+            f"(コンテナFPS: {container_fps:.3f}, 実効FPS: {effective_fps:.3f})",
+            flush=True,
+        )
+    _LAST_VFR_INFO[str(input_video)] = {
+        "is_vfr": is_vfr,
+        "container_fps": float(container_fps),
+        "effective_fps": float(effective_fps),
+    }
     print(f"YOLO処理フレーム数: {processed_frames}（動画情報の値: {total_frames}）", flush=True)
     print("PROGRESS:50:YOLO", flush=True)
     if target_stable_id is None:
@@ -2030,6 +1779,14 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     )
     output_csv = output_directory / OUTPUT_CSV_NAME
     output_metadata = output_directory / OUTPUT_METADATA_NAME
+    output_metadata_json = output_directory / (
+        globals().get("OUTPUT_METADATA_JSON_NAME")
+        or default_names["OUTPUT_METADATA_JSON_NAME"]
+    )
+    output_npz = output_directory / (
+        globals().get("OUTPUT_NPZ_NAME")
+        or default_names["OUTPUT_NPZ_NAME"]
+    )
 
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -2042,6 +1799,14 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     metadata_fps = metadata_capture.get(cv2.CAP_PROP_FPS) or 30.0
     metadata_capture.release()
 
+    recorded_at = get_recorded_at(input_video)
+    manual_capture_fps = globals().get("CAPTURE_FPS")
+    pre_capture_fps, capture_fps_source = resolve_capture_fps(
+        input_video,
+        metadata_fps,
+        manual_capture_fps,
+    )
+
     write_video_metadata(
         input_video,
         output_metadata,
@@ -2049,6 +1814,12 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         metadata_width,
         metadata_height,
         metadata_fps,
+        recorded_at=recorded_at,
+        metadata_total_frames=metadata_total_frames,
+        playback_fps=metadata_fps,
+        capture_fps=pre_capture_fps,
+        capture_fps_source=capture_fps_source,
+        yolo_model=YOLO_MODEL,
     )
 
     yolo_started_at = perf_counter()
@@ -2059,7 +1830,7 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
             YOLO_IMAGE_SIZE,
             YOLO_BATCH_SIZE,
         )
-        _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
+        frame_detections, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
             input_video,
             metadata_total_frames,
             device=yolo_device,
@@ -2067,12 +1838,23 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
             pose_device=pose_device,
         )
     else:
-        _, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
+        frame_detections, target_boxes, target_stable_id, width, height, fps = run_yolo_pass(
             input_video,
             metadata_total_frames,
             device=yolo_device,
         )
     yolo_elapsed_seconds = perf_counter() - yolo_started_at
+    vfr_info = _LAST_VFR_INFO.get(str(input_video), {})
+    is_vfr = bool(vfr_info.get("is_vfr", False))
+    effective_playback_fps = float(vfr_info.get("effective_fps", fps) or fps)
+    effective_capture_fps, capture_fps_source = resolve_capture_fps(
+        input_video,
+        effective_playback_fps,
+        manual_capture_fps,
+    )
+    planned_box_states = compute_target_box_states(
+        frame_detections, target_boxes, target_stable_id
+    )
 
     # Pass 1 (YOLO) が解放された後にのみ Pass 2 の姿勢推定モデルをロードする（12GB VRAM競合防止）
     pose_init_started_at = perf_counter()
@@ -2174,12 +1956,43 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 effective_pose_batch = total_pose_frames
             aborted = False
 
+            label_font_scale = max(0.3, float(globals().get("LABEL_FONT_SCALE", 1.0)))
+            label_thickness = max(1, int(round(2.0 * label_font_scale)))
+            skel_line_w = max(1, int(globals().get("SKELETON_LINE_WIDTH", 2)))
+            kpt_rad = max(1, int(globals().get("KEYPOINT_RADIUS", 4)))
+            crop_scale_ratio = max(
+                0.4,
+                min(1.0, (max(crop_w, crop_h) / max(min(width, height), 1)) * 1.5),
+            )
+            crop_line_w = max(1, int(round(skel_line_w * crop_scale_ratio)))
+            crop_kpt_rad = max(1, int(round(kpt_rad * crop_scale_ratio)))
+            crop_udp_span = np.array([max(crop_w - 1, 1), max(crop_h - 1, 1)], dtype=np.float32)
+
+            npz_target_boxes: list[list[float]] = []
+            npz_box_states: list[int] = []
+            npz_crop_centers: list[list[float]] = []
+            npz_crop_scales: list[list[float]] = []
+            npz_crop_kpts: list[np.ndarray] = []
+            npz_kpts_xy: list[np.ndarray] = []
+            npz_kpts_score: list[np.ndarray] = []
+
             def _emit_pose_frame(
                 idx, frame, target_box, restored_keypoints, pose_scores, crop_info=None
             ) -> None:
                 nonlocal frame_count, target_box_count, pose_success_count, last_progress
                 if target_box is not None:
                     target_box_count += 1
+                    npz_target_boxes.append([float(v) for v in target_box[:4]])
+                    box_state_val = (
+                        planned_box_states[idx]
+                        if idx < len(planned_box_states)
+                        else 1
+                    )
+                else:
+                    npz_target_boxes.append([np.nan, np.nan, np.nan, np.nan])
+                    box_state_val = 0
+                npz_box_states.append(int(box_state_val))
+
                 if restored_keypoints is not None:
                     pose_success_count += 1
                     annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
@@ -2187,28 +2000,63 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 if crop_info is not None:
                     crop_bgr, crop_center, crop_scale = crop_info
                     crop_writer_worker.write(crop_bgr)
-                    crop_skeleton = estimator.render_pose_on_crop(
-                        crop_bgr,
-                        restored_keypoints,
-                        pose_scores,
-                        crop_center,
-                        crop_scale,
-                        KEYPOINT_THRESHOLD,
-                    )
+                    c_arr = np.asarray(crop_center, dtype=np.float32)
+                    s_arr = np.asarray(crop_scale, dtype=np.float32)
+                    npz_crop_centers.append([float(c_arr[0]), float(c_arr[1])])
+                    npz_crop_scales.append([float(s_arr[0]), float(s_arr[1])])
+                    try:
+                        crop_skeleton = estimator.render_pose_on_crop(
+                            crop_bgr,
+                            restored_keypoints,
+                            pose_scores,
+                            crop_center,
+                            crop_scale,
+                            KEYPOINT_THRESHOLD,
+                            skeleton_line_width=crop_line_w,
+                            keypoint_radius=crop_kpt_rad,
+                        )
+                    except TypeError:
+                        crop_skeleton = estimator.render_pose_on_crop(
+                            crop_bgr,
+                            restored_keypoints,
+                            pose_scores,
+                            crop_center,
+                            crop_scale,
+                            KEYPOINT_THRESHOLD,
+                        )
                     crop_skeleton_writer_worker.write(crop_skeleton)
                 else:
+                    npz_crop_centers.append([np.nan, np.nan])
+                    npz_crop_scales.append([np.nan, np.nan])
                     crop_writer_worker.write(black_crop)
                     crop_skeleton_writer_worker.write(black_crop)
 
+                if restored_keypoints is not None and pose_scores is not None:
+                    k_arr = np.asarray(restored_keypoints, dtype=np.float32)
+                    s_arr_k = np.asarray(pose_scores, dtype=np.float32)
+                    npz_kpts_xy.append(k_arr)
+                    npz_kpts_score.append(s_arr_k)
+                    if crop_info is not None:
+                        _, cc, cs = crop_info
+                        cc_arr = np.asarray(cc, dtype=np.float32)
+                        cs_arr = np.where(np.asarray(cs, dtype=np.float32) == 0.0, 1.0, np.asarray(cs, dtype=np.float32))
+                        crop_k_arr = ((k_arr - cc_arr) / cs_arr + 0.5) * crop_udp_span
+                        npz_crop_kpts.append(crop_k_arr.astype(np.float32))
+                    else:
+                        npz_crop_kpts.append(np.full((17, 2), np.nan, dtype=np.float32))
+                else:
+                    npz_kpts_xy.append(np.full((17, 2), np.nan, dtype=np.float32))
+                    npz_kpts_score.append(np.full((17,), np.nan, dtype=np.float32))
+                    npz_crop_kpts.append(np.full((17, 2), np.nan, dtype=np.float32))
+
                 frame_data = {
                     "frame": idx,
-                    "time_seconds": idx / fps,
+                    "time_seconds": idx / effective_capture_fps,
                     "persons": [],
                 }
                 if restored_keypoints is not None:
                     person = {
                         "person_id": target_stable_id,
-                        "yolo_track_id": target_stable_id,
                     }
                     for kp_index, name in enumerate(COCO_KEYPOINTS):
                         x, y = restored_keypoints[kp_index]
@@ -2221,27 +2069,14 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
 
                 csv_writer.writerow(make_csv_row(frame_data))
 
-                if restored_keypoints is not None and target_box is not None:
-                    label_x, label_y = map(int, target_box[:2])
-                    cv2.putText(
-                        frame,
-                        f"YOLO stable_id: {target_stable_id}",
-                        (label_x, max(25, label_y - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
-
                 cv2.putText(
                     frame,
                     f"Frame: {idx + 1}",
                     (40, 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
+                    label_font_scale,
                     (0, 0, 255),
-                    2,
+                    label_thickness,
                     cv2.LINE_AA,
                 )
 
@@ -2259,6 +2094,7 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 next_read_idx = 0
                 eof = False
                 while next_read_idx < total_pose_frames and not eof:
+                    _check_cancel_requested()
                     buffered = []
                     valid_positions = []
                     max_buffered = min(
@@ -2278,7 +2114,7 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                         next_read_idx += 1
                         target_box = target_boxes[idx]
                         is_valid = (
-                            _clamped_target_box(target_box, frame.shape[1], frame.shape[0])
+                            clamped_target_box(target_box, frame.shape[1], frame.shape[0])
                             is not None
                         )
                         if not buffered and not is_valid:
@@ -2376,6 +2212,7 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                                 crop_skeleton_writer.release()
 
         pose_elapsed_seconds = pose_init_seconds + perf_counter() - pose_started_at
+        pose_display_name = estimator.display_name
         print(f"PROGRESS:100:{phase_code}", flush=True)
     except BaseException:
         if model_cache is not None:
@@ -2385,12 +2222,131 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         if model_cache is None:
             estimator.close()
 
+    # Finalize NPZ + JSON + TXT metadata aligned strictly to actual frame count T = frame_count
+    actual_t = frame_count
+    frame_indices_arr = np.arange(actual_t, dtype=np.int32)
+    timestamps_arr = frame_indices_arr.astype(np.float64) / float(effective_capture_fps)
+    np.savez_compressed(
+        output_npz,
+        frame_indices=frame_indices_arr,
+        timestamps_sec=timestamps_arr,
+        keypoints_xy=(
+            np.stack(npz_kpts_xy[:actual_t], axis=0).astype(np.float32)
+            if actual_t > 0
+            else np.empty((0, 17, 2), dtype=np.float32)
+        ),
+        keypoints_score=(
+            np.stack(npz_kpts_score[:actual_t], axis=0).astype(np.float32)
+            if actual_t > 0
+            else np.empty((0, 17), dtype=np.float32)
+        ),
+        target_boxes=(
+            np.asarray(npz_target_boxes[:actual_t], dtype=np.float32)
+            if actual_t > 0
+            else np.empty((0, 4), dtype=np.float32)
+        ),
+        box_state=(
+            np.asarray(npz_box_states[:actual_t], dtype=np.int8)
+            if actual_t > 0
+            else np.empty((0,), dtype=np.int8)
+        ),
+        crop_centers=(
+            np.asarray(npz_crop_centers[:actual_t], dtype=np.float32)
+            if actual_t > 0
+            else np.empty((0, 2), dtype=np.float32)
+        ),
+        crop_scales=(
+            np.asarray(npz_crop_scales[:actual_t], dtype=np.float32)
+            if actual_t > 0
+            else np.empty((0, 2), dtype=np.float32)
+        ),
+        crop_size=np.asarray([crop_w, crop_h], dtype=np.int32),
+        crop_keypoints_xy=(
+            np.stack(npz_crop_kpts[:actual_t], axis=0).astype(np.float32)
+            if actual_t > 0
+            else np.empty((0, 17, 2), dtype=np.float32)
+        ),
+    )
+
+    metadata_json_payload = {
+        "schema_version": "1.0",
+        "video": {
+            "source_path": str(input_video.resolve()),
+            "video_name": input_video.name,
+            "recorded_at": recorded_at,
+            "width": int(width),
+            "height": int(height),
+            "actual_frame_count": int(actual_t),
+            "container_frame_count": int(metadata_total_frames),
+            "capture_fps": float(effective_capture_fps),
+            "capture_fps_source": capture_fps_source,
+            "playback_fps": float(effective_playback_fps),
+            "is_vfr": bool(is_vfr),
+            "duration_seconds": float(actual_t / effective_capture_fps if effective_capture_fps > 0 else 0.0),
+        },
+        "ai": {
+            "person_detector": {
+                "model": str(YOLO_MODEL),
+                "tracker": str(YOLO_TRACKER),
+                "image_size": int(YOLO_IMAGE_SIZE),
+                "confidence": float(YOLO_CONFIDENCE),
+                "iou": float(YOLO_IOU),
+                "classes": [int(c) for c in YOLO_CLASSES],
+            },
+            "pose_estimator": {
+                "engine": pose_engine,
+                "display_name": pose_display_name,
+                "crop_size": [int(crop_w), int(crop_h)],
+                "keypoint_threshold": float(KEYPOINT_THRESHOLD),
+                "keypoint_names": list(COCO_KEYPOINTS),
+            },
+            "target_stable_id": target_stable_id,
+        },
+        "outputs": {
+            "video": output_video.name,
+            "crop_video": output_crop_video.name,
+            "crop_skeleton_video": output_crop_skeleton_video.name,
+            "csv": output_csv.name,
+            "metadata_txt": output_metadata.name,
+            "metadata_json": output_metadata_json.name,
+            "npz": output_npz.name,
+        },
+        "counts": {
+            "target_boxes": int(target_box_count),
+            "pose_calls": int(pose_call_count),
+            "pose_accepted": int(pose_success_count),
+        },
+    }
+    output_metadata_json.write_text(
+        json.dumps(metadata_json_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    write_video_metadata(
+        input_video,
+        output_metadata,
+        actual_t,
+        width,
+        height,
+        effective_playback_fps,
+        recorded_at=recorded_at,
+        metadata_total_frames=metadata_total_frames,
+        playback_fps=effective_playback_fps,
+        capture_fps=effective_capture_fps,
+        capture_fps_source=capture_fps_source,
+        is_vfr=is_vfr,
+        yolo_model=YOLO_MODEL,
+        pose_engine_label=pose_display_name,
+        target_stable_id=target_stable_id,
+    )
+
     print(f"Finished: {frame_count} frames")
     print(f"Output: {output_video.resolve()}")
     print(f"Crop: {output_crop_video.resolve()}")
     print(f"Crop Skeleton: {output_crop_skeleton_video.resolve()}")
     print(f"CSV: {output_csv.resolve()}")
     print(f"Metadata: {output_metadata.resolve()}")
+    print(f"Metadata JSON: {output_metadata_json.resolve()}")
+    print(f"NPZ: {output_npz.resolve()}")
     print(f"Target boxes: {target_box_count}/{frame_count}")
     print(f"{phase_label} calls: {pose_call_count}, accepted: {pose_success_count}")
     yolo_analysis_fps = len(target_boxes) / yolo_elapsed_seconds if yolo_elapsed_seconds > 0 else 0.0
@@ -2399,6 +2355,37 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     print(f"YOLO分析速度: {yolo_analysis_fps:.2f} フレーム/秒", flush=True)
     print(f"{phase_label}分析時間: {pose_elapsed_seconds:.2f} 秒", flush=True)
     print(f"{phase_label}分析速度: {pose_analysis_fps:.2f} フレーム/秒", flush=True)
+
+
+_CANCEL_EVENT = threading.Event()
+_CANCEL_FLAG_FILE: Path | None = None
+
+
+class AnalysisCancelledError(Exception):
+    """Raised when the current analysis job is cancelled cooperatively."""
+
+
+def _is_cancel_requested() -> bool:
+    if _CANCEL_EVENT.is_set():
+        return True
+    flag_file = _CANCEL_FLAG_FILE
+    if flag_file is not None:
+        try:
+            if flag_file.exists():
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _check_cancel_requested() -> None:
+    if _is_cancel_requested():
+        raise AnalysisCancelledError("解析がキャンセルされました。")
+
+
+def _handle_cancel_signal(signum, frame) -> None:
+    del signum, frame
+    _CANCEL_EVENT.set()
 
 
 def _init_worker_environment() -> None:
@@ -2411,6 +2398,14 @@ def _init_worker_environment() -> None:
     os.environ.setdefault("YOLO_VERBOSE", "False")
     configure_hf_environment()
     warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\.cuda")
+
+    for sig_name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handle_cancel_signal)
+            except (ValueError, OSError):
+                pass
 
     if "cv2" not in globals():
         globals()["cv2"] = importlib.import_module("cv2")
@@ -2426,11 +2421,19 @@ def _init_worker_environment() -> None:
 
 def _apply_worker_config(config_path: Path) -> None:
     """Reset ENGINE_DEFAULTS globals completely, then apply config JSON overrides."""
+    global _CANCEL_FLAG_FILE
     import importlib
 
-    settings = normalize_legacy_rtmlib_settings(
-        json.loads(config_path.read_text(encoding="utf-8"))
+    _CANCEL_EVENT.clear()
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    cancel_file_raw = raw_config.pop("__CANCEL_FLAG_FILE__", None)
+    _CANCEL_FLAG_FILE = (
+        Path(cancel_file_raw)
+        if cancel_file_raw
+        else config_path.with_suffix(".cancel")
     )
+
+    settings = normalize_legacy_rtmlib_settings(raw_config)
     unknown = set(settings) - set(ENGINE_DEFAULTS)
     if unknown:
         raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")
@@ -2464,7 +2467,11 @@ def run_analysis_worker(config_path: Path) -> None:
     """同じgui.pyを解析ワーカーとして起動した場合のエントリーポイント。"""
     _init_worker_environment()
     _apply_worker_config(config_path)
-    run_analysis()
+    try:
+        run_analysis()
+    except AnalysisCancelledError as exc:
+        print(str(exc), flush=True)
+        sys.exit(1)
 
 
 def run_persistent_worker(initial_config: Path | None = None) -> None:
@@ -2489,6 +2496,9 @@ def run_persistent_worker(initial_config: Path | None = None) -> None:
                 try:
                     _apply_worker_config(job_config_path)
                     run_analysis(model_cache=cache)
+                except AnalysisCancelledError as exc:
+                    print(str(exc), flush=True)
+                    exit_code = 1
                 except Exception:
                     import traceback
 

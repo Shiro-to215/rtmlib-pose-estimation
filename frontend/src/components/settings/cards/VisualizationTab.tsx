@@ -1,5 +1,4 @@
 import React from 'react';
-import { ToggleSwitch } from '../widgets/ToggleSwitch';
 import { SliderWithInput } from '../widgets/SliderWithInput';
 
 export interface VisualizationTabProps {
@@ -13,25 +12,6 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
 }) => {
   return (
     <div className="space-y-4">
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <h4 className="text-xs font-bold text-[#1E293B] mb-2">描画要素の表示・非表示</h4>
-        <div className="grid grid-cols-2 gap-4">
-          <ToggleSwitch
-            label="骨格ライン・関節描画"
-            description="出力動画に人物骨格ラインと関節点を描画します"
-            checked={values.DRAW_SKELETON !== false}
-            onChange={(v) => setFieldValue('DRAW_SKELETON', v)}
-          />
-
-          <ToggleSwitch
-            label="バウンディングボックス描画"
-            description="出力動画に人物の検出枠および追跡IDを描画します"
-            checked={values.DRAW_BBOX !== false}
-            onChange={(v) => setFieldValue('DRAW_BBOX', v)}
-          />
-        </div>
-      </div>
-
       <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
         <h4 className="text-xs font-bold text-[#1E293B] mb-2">描画スタイル・サイズ調整</h4>
         <div className="grid grid-cols-3 gap-3">
@@ -59,8 +39,8 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
 
           <SliderWithInput
             label="ラベル文字倍率"
-            description="追跡IDやフレーム番号テキストのフォント倍率"
-            value={values.LABEL_FONT_SCALE ?? 0.7}
+            description="フレーム番号テキストのフォント倍率"
+            value={values.LABEL_FONT_SCALE ?? 1.0}
             min={0.3}
             max={2.0}
             step={0.05}

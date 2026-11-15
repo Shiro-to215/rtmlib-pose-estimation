@@ -17,6 +17,13 @@ export interface AddReservationViewProps {
   onOpenBasicSettings: () => void;
 }
 
+const joinOutputPath = (baseRoot: string, leaf: string): string => {
+  const cleanRoot = (baseRoot || '').replace(/[\\/]+$/, '');
+  if (!cleanRoot) return leaf;
+  const sep = cleanRoot.includes('/') && !cleanRoot.includes('\\') ? '/' : '\\';
+  return `${cleanRoot}${sep}${leaf}`;
+};
+
 export const AddReservationView: React.FC<AddReservationViewProps> = ({
   initialVideos = [],
   defaultOutputRoot,
@@ -28,12 +35,20 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
   const [videos, setVideos] = useState<string[]>(initialVideos);
   const [singleDest, setSingleDest] = useState<string>('');
   const [parentRoot, setParentRoot] = useState<string>(defaultOutputRoot);
+  const [parentRootTouched, setParentRootTouched] = useState<boolean>(false);
   const [thumbnailPath, setThumbnailPath] = useState<string>('');
   const [previewNames, setPreviewNames] = useState<Record<string, string>>({});
   const [customDestTouched, setCustomDestTouched] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const isMulti = videos.length > 1;
+
+  // Keep default output root synced until edited
+  useEffect(() => {
+    if (!parentRootTouched) {
+      setParentRoot(defaultOutputRoot);
+    }
+  }, [defaultOutputRoot, parentRootTouched]);
 
   // Merge newly dropped initialVideos when already inside AddReservationView
   useEffect(() => {
@@ -42,18 +57,23 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     }
   }, [initialVideos]);
 
-  // Auto-sync singleDest when 1 video is present and user hasn't explicitly typed custom path
+  // Auto-sync singleDest when 1 video is present, or clear when empty
   useEffect(() => {
+    if (videos.length === 0) {
+      if (!customDestTouched) {
+        setSingleDest('');
+      }
+      return;
+    }
     if (videos.length === 1 && !customDestTouched) {
       const v = videos[0];
       const name = v.split('\\').pop() || v.split('/').pop() || '';
       const stem = name.replace(/\.[^/.]+$/, '');
-      const defaultDest = parentRoot ? `${parentRoot}\\${stem}` : stem;
-      setSingleDest(defaultDest);
+      setSingleDest(joinOutputPath(parentRoot, stem));
     }
   }, [videos, parentRoot, customDestTouched]);
 
-  // Fetch output preview names when singleDest changes
+  // Fetch output preview names when singleDest changes, or clear when invalid
   useEffect(() => {
     if (!isMulti && singleDest) {
       const api = getBackendApi();
@@ -62,6 +82,8 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
           if (names) setPreviewNames(names);
         });
       }
+    } else {
+      setPreviewNames({});
     }
   }, [singleDest, isMulti]);
 
@@ -79,14 +101,23 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
 
   const handleClearVideos = () => {
     setVideos([]);
+    setSingleDest('');
+    setPreviewNames({});
     setCustomDestTouched(false);
   };
 
   const handleRemoveVideo = (index: number) => {
-    setVideos((prev) => prev.filter((_, idx) => idx !== index));
-    if (videos.length <= 2) {
-      setCustomDestTouched(false);
-    }
+    setVideos((prev) => {
+      const next = prev.filter((_, idx) => idx !== index);
+      if (next.length <= 1) {
+        setCustomDestTouched(false);
+        if (next.length === 0) {
+          setSingleDest('');
+          setPreviewNames({});
+        }
+      }
+      return next;
+    });
   };
 
   const handleBrowseDestination = async () => {
@@ -98,6 +129,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
       if (dir) {
         if (isMulti) {
           setParentRoot(dir);
+          setParentRootTouched(true);
         } else {
           setSingleDest(dir);
           setCustomDestTouched(true);
@@ -139,6 +171,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
   // Drag and drop into file list section
   const handleDropFiles = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.m4v', '.wmv', '.webm'];
     const paths: string[] = [];
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
@@ -292,7 +325,9 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
                     <div>・ 骨格なしcrop動画: {previewNames.OUTPUT_CROP_VIDEO_NAME || '自動生成'}</div>
                     <div>・ 骨格ありcrop動画: {previewNames.OUTPUT_CROP_SKELETON_VIDEO_NAME || '自動生成'}</div>
                     <div>・ CSVデータ: {previewNames.OUTPUT_CSV_NAME || '自動生成'}</div>
-                    <div>・ メタデータ: {previewNames.OUTPUT_METADATA_NAME || '自動生成'}</div>
+                    <div>・ NPZデータ: {previewNames.OUTPUT_NPZ_NAME || '自動生成'}</div>
+                    <div>・ メタデータ(TXT): {previewNames.OUTPUT_METADATA_NAME || '自動生成'}</div>
+                    <div>・ メタデータ(JSON): {previewNames.OUTPUT_METADATA_JSON_NAME || '自動生成'}</div>
                   </div>
                 </div>
 
@@ -338,8 +373,11 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
                     <input
                       type="text"
                       value={parentRoot}
-                      onChange={(e) => setParentRoot(e.target.value)}
-                      placeholder="C:\...\出力親フォルダー"
+                      onChange={(e) => {
+                        setParentRoot(e.target.value);
+                        setParentRootTouched(true);
+                      }}
+                      placeholder="出力親フォルダーのパス"
                       className="flex-1 h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0F766E] focus:outline-none bg-white font-mono"
                     />
                     <button
@@ -363,7 +401,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
                       const stem = name.replace(/\.[^/.]+$/, '');
                       return (
                         <div key={i} className="truncate">
-                          ・ {name} → {parentRoot ? `${parentRoot}\\${stem}` : stem}
+                          ・ {name} → {joinOutputPath(parentRoot, stem)}
                         </div>
                       );
                     })}

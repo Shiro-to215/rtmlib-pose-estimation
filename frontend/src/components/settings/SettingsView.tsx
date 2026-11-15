@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, RotateCcw, Save, Search, X } from 'lucide-react';
+import { ChevronLeft, RotateCcw, Save } from 'lucide-react';
 import { JobSettings, ReservationJob } from '../../types/models';
 import { useSettingsForm } from './hooks/useSettingsForm';
 import { DefaultIoCard } from './cards/DefaultIoCard';
@@ -42,6 +42,8 @@ const JOB_SCOPED_SETTING_KEYS = new Set([
   'OUTPUT_CROP_SKELETON_VIDEO_NAME',
   'OUTPUT_CSV_NAME',
   'OUTPUT_METADATA_NAME',
+  'OUTPUT_METADATA_JSON_NAME',
+  'OUTPUT_NPZ_NAME',
 ]);
 
 function extractEngineParams(source: Record<string, any>): Record<string, any> {
@@ -67,7 +69,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const tRoot = job?.settings?.THUMBNAIL_ROOT ? String(job.settings.THUMBNAIL_ROOT) : '';
     const tName = job?.settings?.THUMBNAIL_IMAGE_NAME ? String(job.settings.THUMBNAIL_IMAGE_NAME) : '';
     if (tRoot && tName) {
-      return `${tRoot.replace(/[\\/]+$/, '')}\\${tName}`;
+      const sep = tRoot.includes('/') && !tRoot.includes('\\') ? '/' : '\\';
+      return `${tRoot.replace(/[\\/]+$/, '')}${sep}${tName}`;
     }
     return '';
   }, [job]);
@@ -77,7 +80,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     useSettingsForm(initialData, mode);
 
   const [activeTab, setActiveTab] = useState<TabType>('general');
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [defaultRoot, setDefaultRoot] = useState<string>(systemInfo.output_root || '');
   const [destination, setDestination] = useState<string>(job?.output_path || '');
   const [thumbnail, setThumbnail] = useState<string>(initialThumbPath);
@@ -118,16 +120,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       // Restore hardcoded engine defaults
       resetToDefaults({
         DEVICE: 'auto',
+        CAPTURE_FPS: null,
         YOLO_MODEL: 'yolo11m.pt',
         BACKEND: 'onnxruntime',
-        CSV_MAX_PERSONS: 3,
         YOLO_IMAGE_SIZE: 1280,
         YOLO_CONFIDENCE: 0.2,
         YOLO_IOU: 0.5,
         YOLO_CLASSES: [0],
         YOLO_BATCH_SIZE: 1,
-        YOLO_TRACK_ID: null,
-        CROP_PADDING_RATIO: 0.25,
         KEYPOINT_THRESHOLD: 0.45,
         POSE_ENGINE: 'rtmpose',
         RTMLIB_POSE_MODEL: 'x',
@@ -135,40 +135,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         RTMPOSE_BATCH_SIZE: 1,
         VITPOSE_MODEL: 'h',
         VITPOSE_INPUT_SIZE: '256x192',
+        VITPOSE_PRECISION: 'fp16',
         VITPOSE_BATCH_SIZE: 4,
         VITPOSE_FLIP_TEST: true,
         YOLO_TRACKER: 'bytetrack.yaml',
-        TARGET_LOCK_RAW_ID: true,
-        TARGET_REQUIRE_SAME_RAW_ID_WHEN_MISSING: true,
         TARGET_SELECTION_MIN_FRAMES: 15,
         TARGET_SELECTION_COVERAGE_WEIGHT: 0.5,
         TARGET_BOX_FILL_MAX_FRAMES: 60,
-        TARGET_REACQUIRE_MAX_DISTANCE: 300.0,
-        TARGET_REACQUIRE_MIN_IOU: 0.05,
-        TARGET_TRACK_MATCH_THRESHOLD: 0.75,
-        TARGET_TRACK_MIN_IOU: 0.15,
-        TRACK_MAX_DISTANCE: 250.0,
         TRACK_MAX_MISSED_FRAMES: 8,
         TRACK_MATCH_THRESHOLD: 2.0,
-        TRACK_CENTER_WEIGHT: 0.35,
-        TRACK_KEYPOINT_WEIGHT: 0.35,
-        TRACK_POSE_WEIGHT: 0.2,
-        TRACK_BBOX_WEIGHT: 0.1,
         TRACK_VELOCITY_SMOOTHING: 0.35,
         TRACK_RAW_ID_BONUS: 2.0,
         TRACK_PREDICTED_BOX_WEIGHT: 0.35,
         TRACK_PREDICTION_MAX_FRAMES: 2,
-        POSE_TRACK_KEYPOINT_WEIGHT: 0.65,
-        POSE_TRACK_CENTER_WEIGHT: 0.25,
-        POSE_TRACK_SHAPE_WEIGHT: 0.1,
-        POSE_BOX_IOU_WEIGHT: 2.0,
-        POSE_BOX_CENTER_WEIGHT: 0.5,
-        POSE_TEMPORAL_WEIGHT: 0.5,
-        DRAW_SKELETON: true,
-        DRAW_BBOX: true,
         SKELETON_LINE_WIDTH: 2,
         KEYPOINT_RADIUS: 4,
-        LABEL_FONT_SCALE: 0.7,
+        LABEL_FONT_SCALE: 1.0,
       });
     } else {
       // Reflect only analysis parameters from global defaults; preserve job input video & destination (Plan A)
@@ -282,112 +264,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )
         )}
 
-        {/* Search & Filter Bar */}
-        <div className="relative mb-4 flex-shrink-0">
-          <Search className="w-4 h-4 text-[#94A3B8] absolute left-3 top-2.5" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="設定項目をキーワードで検索（例: YOLO, 信頼度, 重み, 解像度, デバイス…）"
-            className="w-full h-9 pl-9 pr-8 text-xs border border-[#CBD5E1] rounded-lg bg-white text-[#1E293B] focus:border-[#0F766E] focus:outline-none"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-2.5 text-[#94A3B8] hover:text-[#1E293B]"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
+        {/* 3-Tab Navigation */}
+        <div className="flex border-b border-[#CBD5E1] mb-4 flex-shrink-0">
+          <button
+            onClick={() => setActiveTab('general')}
+            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'general'
+                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
+                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
+            }`}
+          >
+            基本・出力設定
+            {rtmlibWarning && (
+              <span className="ml-1.5 w-2 h-2 inline-block rounded-full bg-[#C8332B]" />
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('tracking')}
+            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'tracking'
+                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
+                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
+            }`}
+          >
+            トラッキング・重み設定
+          </button>
+          <button
+            onClick={() => setActiveTab('visualization')}
+            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'visualization'
+                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
+                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
+            }`}
+          >
+            可視化・オーバーレイ設定
+          </button>
         </div>
 
-        {/* If searching: Show filtered search results; Else: show 3 tabs */}
-        {searchQuery.trim() ? (
-          <div className="space-y-4">
-            <div className="text-xs font-bold text-[#475569] pb-2 border-b border-[#E2E8F0]">
-              検索結果: 「{searchQuery}」
-            </div>
-            {/* Filtered view includes all matching widgets */}
-            <div className="space-y-4">
-              <GeneralOutputTab
-                values={values}
-                setFieldValue={setFieldValue}
-                choices={systemInfo.choices}
-                errors={errors}
-                rtmlibWarning={rtmlibWarning}
-              />
-              <TrackingWeightsTab
-                values={values}
-                setFieldValue={setFieldValue}
-                choices={systemInfo.choices}
-              />
-              <VisualizationTab values={values} setFieldValue={setFieldValue} />
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* 3-Tab Navigation */}
-            <div className="flex border-b border-[#CBD5E1] mb-4 flex-shrink-0">
-              <button
-                onClick={() => setActiveTab('general')}
-                className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'general'
-                    ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                    : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-                }`}
-              >
-                基本・出力設定
-                {rtmlibWarning && (
-                  <span className="ml-1.5 w-2 h-2 inline-block rounded-full bg-[#C8332B]" />
-                )}
-              </button>
-              <button
-                onClick={() => setActiveTab('tracking')}
-                className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'tracking'
-                    ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                    : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-                }`}
-              >
-                トラッキング・重み設定
-              </button>
-              <button
-                onClick={() => setActiveTab('visualization')}
-                className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'visualization'
-                    ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                    : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-                }`}
-              >
-                可視化・オーバーレイ設定
-              </button>
-            </div>
-
-            {/* Tab Body */}
-            <div className="flex-1 pb-4">
-              {activeTab === 'general' && (
-                <GeneralOutputTab
-                  values={values}
-                  setFieldValue={setFieldValue}
-                  choices={systemInfo.choices}
-                  errors={errors}
-                  rtmlibWarning={rtmlibWarning}
-                />
-              )}
-              {activeTab === 'tracking' && (
-                <TrackingWeightsTab
-                  values={values}
-                  setFieldValue={setFieldValue}
-                  choices={systemInfo.choices}
-                />
-              )}
-              {activeTab === 'visualization' && (
-                <VisualizationTab values={values} setFieldValue={setFieldValue} />
-              )}
-            </div>
-          </>
-        )}
+        {/* Tab Body */}
+        <div className="flex-1 pb-4">
+          {activeTab === 'general' && (
+            <GeneralOutputTab
+              values={values}
+              setFieldValue={setFieldValue}
+              choices={systemInfo.choices}
+              errors={errors}
+              rtmlibWarning={rtmlibWarning}
+            />
+          )}
+          {activeTab === 'tracking' && (
+            <TrackingWeightsTab
+              values={values}
+              setFieldValue={setFieldValue}
+              choices={systemInfo.choices}
+            />
+          )}
+          {activeTab === 'visualization' && (
+            <VisualizationTab values={values} setFieldValue={setFieldValue} />
+          )}
+        </div>
       </div>
     </div>
   );

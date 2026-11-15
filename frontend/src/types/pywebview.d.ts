@@ -17,6 +17,7 @@ export interface BackendApi {
   ): Promise<ReservationJob[]>;
   remove_jobs(jobIds: string[]): Promise<ReservationJob[]>;
   move_job(jobId: string, direction: 'up' | 'down' | number): Promise<ReservationJob[]>;
+  reorder_job(jobId: string, targetVisibleIndex: number): Promise<ReservationJob[]>;
   update_job_settings(
     jobId: string,
     settings: Partial<JobSettings>,

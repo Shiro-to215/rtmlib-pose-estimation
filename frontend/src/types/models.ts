@@ -10,11 +10,11 @@ export interface JobSummary {
   pose_input_size: string;
   vitpose_model?: string;
   vitpose_input_size?: string;
+  vitpose_precision?: string;
   vitpose_flip_test?: boolean;
   yolo_model: string;
   device: string;
-  track_id: number | null;
-  csv_max_persons: number;
+  capture_fps?: number | null;
 }
 
 export interface JobSettings {
@@ -27,23 +27,23 @@ export interface JobSettings {
   OUTPUT_CROP_SKELETON_VIDEO_NAME?: string;
   OUTPUT_CSV_NAME?: string;
   OUTPUT_METADATA_NAME?: string;
+  OUTPUT_METADATA_JSON_NAME?: string;
+  OUTPUT_NPZ_NAME?: string;
   DEVICE: string;
+  CAPTURE_FPS?: number | null;
   YOLO_MODEL: string;
   YOLO_CLASSES: number[];
   YOLO_BATCH_SIZE?: number;
-  YOLO_TRACK_ID: number | null;
-  CSV_MAX_PERSONS: number;
   POSE_ENGINE?: PoseEngineType;
   RTMLIB_POSE_MODEL: string;
   RTMLIB_POSE_INPUT_SIZE: string;
   RTMPOSE_BATCH_SIZE?: number;
   VITPOSE_MODEL?: string;
   VITPOSE_INPUT_SIZE?: string;
+  VITPOSE_PRECISION?: 'fp16' | 'fp32' | string;
   VITPOSE_BATCH_SIZE?: number;
   VITPOSE_FLIP_TEST?: boolean;
   // Overlay settings
-  DRAW_SKELETON?: boolean;
-  DRAW_BBOX?: boolean;
   SKELETON_LINE_WIDTH?: number;
   KEYPOINT_RADIUS?: number;
   LABEL_FONT_SCALE?: number;

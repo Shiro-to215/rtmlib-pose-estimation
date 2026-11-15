@@ -12,6 +12,7 @@ export interface QueueJobCardProps {
   onDragStart: (e: React.DragEvent, jobId: string, index: number) => void;
   onDragOver: (e: React.DragEvent, index: number) => void;
   onDrop: (e: React.DragEvent, index: number) => void;
+  onDragEnd?: () => void;
   index: number;
 }
 
@@ -25,6 +26,7 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
   onDragStart,
   onDragOver,
   onDrop,
+  onDragEnd,
   index,
 }) => {
   const isFailed = job.state === 'failed';
@@ -49,6 +51,7 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
       onDragStart={(e) => onDragStart(e, job.id, index)}
       onDragOver={(e) => onDragOver(e, index)}
       onDrop={(e) => onDrop(e, index)}
+      onDragEnd={() => onDragEnd?.()}
       onClick={(e) => onSelect(e, job.id)}
       className={`rounded-lg p-2.5 transition-all grid grid-cols-[216px_108px_1fr] items-center gap-2 cursor-pointer select-none mb-2 ${cardBorderClass}`}
     >

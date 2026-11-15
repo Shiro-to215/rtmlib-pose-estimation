@@ -26,7 +26,9 @@ def resolve_pose_selection(settings: Mapping[str, Any]) -> dict[str, Any]:
             str(settings.get("VITPOSE_MODEL", "h")),
             str(settings.get("VITPOSE_INPUT_SIZE", "256x192")),
         )
-        return {"engine": "vitpose", **resolved}
+        raw_prec = str(settings.get("VITPOSE_PRECISION", "fp16")).strip().lower()
+        precision = raw_prec if raw_prec in ("fp16", "fp32") else "fp16"
+        return {"engine": "vitpose", "precision": precision, **resolved}
 
     resolved = resolve_rtmlib_selection(
         str(settings.get("RTMLIB_POSE_MODEL", "x")),
@@ -52,6 +54,7 @@ def create_pose_estimator(
             input_size=str(settings.get("VITPOSE_INPUT_SIZE", "256x192")),
             device=device,
             flip_test=bool(settings.get("VITPOSE_FLIP_TEST", True)),
+            precision=str(settings.get("VITPOSE_PRECISION", "fp16")),
         )
 
     return RTMPoseEstimator(

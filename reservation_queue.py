@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 import uuid
 
 STATES = {'pending', 'running', 'done', 'failed'}
@@ -19,12 +20,13 @@ _NUMERIC_SUFFIX_RE = re.compile(r'^(.+)_(\d+)$')
 def transactional(method):
     @wraps(method)
     def update(self, *args, **kwargs):
-        jobs, root = deepcopy(self.jobs), self.output_root
-        try:
-            return method(self, *args, **kwargs)
-        except Exception:
-            self.jobs, self.output_root = jobs, root
-            raise
+        with self._lock:
+            jobs, root = deepcopy(self.jobs), self.output_root
+            try:
+                return method(self, *args, **kwargs)
+            except Exception:
+                self.jobs, self.output_root = jobs, root
+                raise
     return update
 
 
@@ -69,6 +71,7 @@ class Reservation:
 
 class ReservationQueue:
     def __init__(self, path, output_root):
+        self._lock = threading.RLock()
         self.path = Path(path)
         self.output_root = str(output_root)
         self.jobs = []
@@ -102,55 +105,112 @@ class ReservationQueue:
                 self.save()
 
     def save(self):
-        write_json(self.path, {'version': 1, 'output_root': self.output_root,
-                               'jobs': [asdict(job) for job in self.jobs]})
+        with self._lock:
+            write_json(self.path, {'version': 1, 'output_root': self.output_root,
+                                   'jobs': [asdict(job) for job in self.jobs]})
+
+    def snapshot_jobs(self):
+        with self._lock:
+            return list(self.jobs)
 
     def find(self, job_id):
-        return next((job for job in self.jobs if job.id == job_id), None)
+        with self._lock:
+            return next((job for job in self.jobs if job.id == job_id), None)
 
     def next_pending(self):
-        return next((job for job in self.jobs if job.state == 'pending'), None)
+        with self._lock:
+            return next((job for job in self.jobs if job.state == 'pending'), None)
 
     def prioritize_pending(self, job_id):
         """Put the interrupted job before other pending work; caller saves state/order together."""
-        job = self.find(job_id)
-        first = self.next_pending()
-        if job is not None and job.state == 'pending' and first is not None:
-            first_index = self.jobs.index(first)
-            job_index = self.jobs.index(job)
-            if job_index > first_index:
-                self.jobs.pop(job_index)
-                self.jobs.insert(first_index, job)
+        with self._lock:
+            job = self.find(job_id)
+            first = self.next_pending()
+            if job is not None and job.state == 'pending' and first is not None:
+                first_index = self.jobs.index(first)
+                job_index = self.jobs.index(job)
+                if job_index > first_index:
+                    self.jobs.pop(job_index)
+                    self.jobs.insert(first_index, job)
 
     def ensure_available_destination(self, destination, exclude_id=None):
-        destination = Path(destination).expanduser().resolve()
-        if not destination.name:
-            raise ValueError('出力先フォルダを指定してください。')
-        parent = destination.parent
-        reserved = {
-            str(job.output.resolve()).casefold()
-            for job in self.jobs
-            if job.id != exclude_id and job.state != 'done'
-        }
-        if not destination.exists() and str(destination).casefold() not in reserved:
-            return destination
-        match = _NUMERIC_SUFFIX_RE.match(destination.name)
-        if match:
-            base_name = match.group(1)
-            number = max(2, int(match.group(2)) + 1)
-        else:
-            base_name = destination.name
-            number = 2
-        while True:
-            candidate = parent / f'{base_name}_{number}'
-            if not candidate.exists() and str(candidate).casefold() not in reserved:
-                return candidate
-            number += 1
+        with self._lock:
+            destination = Path(destination).expanduser().resolve()
+            if not destination.name:
+                raise ValueError('出力先フォルダを指定してください。')
+            parent = destination.parent
+            reserved = {
+                str(job.output.resolve()).casefold()
+                for job in self.jobs
+                if job.id != exclude_id and job.state != 'done'
+            }
+            if not destination.exists() and str(destination).casefold() not in reserved:
+                return destination
+            match = _NUMERIC_SUFFIX_RE.match(destination.name)
+            if match:
+                base_name = match.group(1)
+                number = max(2, int(match.group(2)) + 1)
+            else:
+                base_name = destination.name
+                number = 2
+            while True:
+                candidate = parent / f'{base_name}_{number}'
+                if not candidate.exists() and str(candidate).casefold() not in reserved:
+                    return candidate
+                number += 1
 
     def available_output(self, video, root, exclude_id=None):
         root = Path(root).expanduser().resolve()
         stem = Path(video).stem or 'video'
         return self.ensure_available_destination(root / stem, exclude_id=exclude_id)
+
+    def set_output_root(self, output_root):
+        with self._lock:
+            self.output_root = str(output_root)
+            self.save()
+
+    @transactional
+    def mark_job_running(self, job_id, output_names=None):
+        job = self.find(job_id)
+        if job is None:
+            return None
+        if output_names is not None and job.output.exists():
+            safe_dest = self.ensure_available_destination(job.output, exclude_id=job.id)
+            set_output(job.settings, safe_dest, output_names)
+        job.state, job.error = 'running', ''
+        self.save()
+        return job
+
+    @transactional
+    def revert_job_pending(self, job_id, prioritize=True):
+        job = self.find(job_id)
+        if job is None:
+            return None
+        if job.state not in {'pending', 'running'}:
+            return job
+        job.state, job.error = 'pending', ''
+        if prioritize:
+            self.prioritize_pending(job.id)
+        self.save()
+        return job
+
+    @transactional
+    def mark_job_done(self, job_id):
+        job = self.find(job_id)
+        if job is None:
+            return None
+        job.state, job.error = 'done', ''
+        self.save()
+        return job
+
+    @transactional
+    def mark_job_failed(self, job_id, error_msg):
+        job = self.find(job_id)
+        if job is None:
+            return None
+        job.state, job.error = 'failed', str(error_msg)
+        self.save()
+        return job
 
     @transactional
     def add(self, videos, template, root, output_names, thumbnail=None, custom_destination=None):
@@ -225,6 +285,24 @@ class ReservationQueue:
                 self.save()
                 return
             other += delta
+
+    @transactional
+    def reorder_job(self, job_id, target_visible_index):
+        """Move a pending/failed job directly to target_visible_index among visible queue items."""
+        visible_slots = [i for i, j in enumerate(self.jobs) if j.state in {'pending', 'failed'}]
+        job = self.find(job_id)
+        if job is None or job.state not in {'pending', 'failed'} or not visible_slots:
+            return
+        visible_jobs = [self.jobs[i] for i in visible_slots]
+        current_pos = visible_jobs.index(job)
+        clamped_target = max(0, min(int(target_visible_index), len(visible_jobs) - 1))
+        if current_pos == clamped_target:
+            return
+        visible_jobs.pop(current_pos)
+        visible_jobs.insert(clamped_target, job)
+        for slot_idx, moved_job in zip(visible_slots, visible_jobs):
+            self.jobs[slot_idx] = moved_job
+        self.save()
 
     @transactional
     def retry(self, ids, output_names):

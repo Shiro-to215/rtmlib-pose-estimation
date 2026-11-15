@@ -64,10 +64,10 @@ def get_cuda_free_total_gb(device: str) -> tuple[float, float] | None:
 def clamp_box(box, width: int, height: int) -> tuple[int, int, int, int]:
     """Clamp an [x1, y1, x2, y2] box to image boundaries."""
     x1, y1, x2, y2 = map(int, box[:4])
-    x1 = max(0, min(x1, width - 1))
-    y1 = max(0, min(y1, height - 1))
-    x2 = max(x1 + 1, min(x2, width))
-    y2 = max(y1 + 1, min(y2, height))
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(width, x2)
+    y2 = min(height, y2)
     return x1, y1, x2, y2
 
 
@@ -151,6 +151,8 @@ def draw_pose_skeleton(
             keypoints_batch,
             scores_batch,
             kpt_thr=kpt_thr,
+            radius=max(1, int(keypoint_radius)),
+            line_width=max(1, int(skeleton_line_width)),
         )
     except Exception:
         pass
@@ -247,6 +249,8 @@ class BasePoseEstimator(ABC):
         center: Any,
         scale: Any,
         keypoint_threshold: float = 0.45,
+        skeleton_line_width: int = 2,
+        keypoint_radius: int = 4,
     ) -> Optional[np.ndarray]:
         """Project restored frame keypoints onto crop_bgr and draw skeleton."""
 

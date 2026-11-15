@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   InitialDataPayload,
   JobSettings,
@@ -49,10 +49,19 @@ export const App: React.FC = () => {
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [phaseCode, setPhaseCode] = useState<string>('IDLE');
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [bannerError, setBannerError] = useState<string | null>(null);
 
   // Right Pane View State
   const [activeView, setActiveView] = useState<RightViewType>('queue');
-  const [selectedJobForSettings, setSelectedJobForSettings] = useState<ReservationJob | null>(null);
+  const activeViewRef = useRef<RightViewType>('queue');
+  useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+  const [selectedJobIdForSettings, setSelectedJobIdForSettings] = useState<string | null>(null);
+  const selectedJobForSettings = useMemo(
+    () => (selectedJobIdForSettings ? queue.find((j) => j.id === selectedJobIdForSettings) || null : null),
+    [queue, selectedJobIdForSettings]
+  );
   const [addInitialVideos, setAddInitialVideos] = useState<string[]>([]);
 
   // Initial Data Fetch (waits for pywebviewready before falling back to dev mock)
@@ -72,6 +81,7 @@ export const App: React.FC = () => {
     waitForBackendApi().then((api) => {
       api.get_initial_data().then(applyInitialPayload).catch((err) => {
         console.error('Failed to fetch initial data:', err);
+        setBannerError('初期データの読み込みに失敗しました。');
       });
     });
 
@@ -79,6 +89,7 @@ export const App: React.FC = () => {
       if (isPyWebViewHost()) {
         getBackendApi().get_initial_data().then(applyInitialPayload).catch((err) => {
           console.error('Failed to refresh initial data on pywebviewready:', err);
+          setBannerError('初期データの再読み込みに失敗しました。');
         });
       }
     };
@@ -100,13 +111,12 @@ export const App: React.FC = () => {
 
     const unsubDropped = subscribeToFilesDropped((paths) => {
       if (!paths || paths.length === 0) return;
-      setAddInitialVideos((prev) => {
-        if (activeView === 'add') {
-          return Array.from(new Set([...prev, ...paths]));
-        }
-        return paths;
-      });
-      setActiveView((curr) => (curr === 'queue' || curr === 'add' ? 'add' : curr));
+      const curr = activeViewRef.current;
+      if (curr !== 'queue' && curr !== 'add') return;
+      setAddInitialVideos((prev) =>
+        curr === 'add' ? Array.from(new Set([...prev, ...paths])) : paths
+      );
+      setActiveView('add');
     });
 
     return () => {
@@ -114,7 +124,7 @@ export const App: React.FC = () => {
       window.removeEventListener('drop', preventNav);
       unsubDropped();
     };
-  }, [activeView]);
+  }, []);
 
   // Telemetry Subscriptions (Dual Event Delivery)
   useEffect(() => {
@@ -156,6 +166,7 @@ export const App: React.FC = () => {
         setProgressPercent(100);
         setPhaseCode('DONE');
       } else {
+        setProgressPercent(0);
         setPhaseCode('IDLE');
       }
     });
@@ -227,56 +238,80 @@ export const App: React.FC = () => {
   // Top Bar Actions
   const handleStartAnalysis = async () => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const res = await api.start_queue_processing();
       if (res && res.status === 'started') {
         setIsProcessing(true);
         setIsStopping(false);
+      } else if (res && res.status === 'error') {
+        setBannerError(res.message || '解析の開始に失敗しました。');
       }
     } catch (err) {
       console.error('Failed to start analysis queue:', err);
+      setBannerError('解析の開始中にエラーが発生しました。');
     }
   };
 
   const handleCancelAnalysis = async () => {
     const api = getBackendApi();
+    setBannerError(null);
     setIsStopping(true);
     try {
       await api.cancel_current_job();
     } catch (err) {
       console.error('Failed to cancel analysis job:', err);
       setIsStopping(false);
+      setBannerError('解析の中断要求に失敗しました。');
     }
   };
 
   // Queue Operations
   const handleDeleteJobs = async (jobIds: string[]) => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const remaining = await api.remove_jobs(jobIds);
       setQueue(remaining);
     } catch (err) {
       console.error('Failed to remove jobs:', err);
+      setBannerError('予約の削除に失敗しました。');
     }
   };
 
   const handleMoveJob = async (jobId: string, direction: 'up' | 'down') => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const updated = await api.move_job(jobId, direction);
       setQueue(updated);
     } catch (err) {
       console.error('Failed to move job:', err);
+      setBannerError('予約の並び替えに失敗しました。');
+    }
+  };
+
+  const handleReorderJob = async (jobId: string, targetVisibleIndex: number) => {
+    const api = getBackendApi();
+    setBannerError(null);
+    try {
+      const updated = await api.reorder_job(jobId, targetVisibleIndex);
+      setQueue(updated);
+    } catch (err) {
+      console.error('Failed to reorder job:', err);
+      setBannerError('ドラッグ＆ドロップでの並び替えに失敗しました。');
     }
   };
 
   const handleRetryJob = async (jobId: string) => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const updated = await api.retry_job(jobId);
       setQueue(updated);
     } catch (err) {
       console.error('Failed to retry job:', err);
+      setBannerError('再試行の登録に失敗しました。');
     }
   };
 
@@ -287,14 +322,14 @@ export const App: React.FC = () => {
   };
 
   const handleOpenBasicSettings = () => {
-    setSelectedJobForSettings(null);
+    setSelectedJobIdForSettings(null);
     setActiveView('basic_settings');
   };
 
   const handleOpenJobSettings = (jobId: string) => {
     const found = queue.find((j) => j.id === jobId);
     if (found) {
-      setSelectedJobForSettings(found);
+      setSelectedJobIdForSettings(jobId);
       setActiveView('job_settings');
     }
   };
@@ -307,6 +342,7 @@ export const App: React.FC = () => {
     thumbnail?: string | null
   ): Promise<boolean> => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const created = await api.add_reservations(
         videos,
@@ -316,17 +352,14 @@ export const App: React.FC = () => {
         thumbnail
       );
       if (created && created.length > 0) {
-        setQueue((prev) => {
-          const existingIds = new Set(prev.map((j) => j.id));
-          const uniqueCreated = created.filter((j) => !existingIds.has(j.id));
-          return uniqueCreated.length > 0 ? [...prev, ...uniqueCreated] : prev;
-        });
         setActiveView('queue');
         return true;
       }
+      setBannerError('予約を追加できませんでした。');
       return false;
     } catch (err) {
       console.error('Failed to add reservations:', err);
+      setBannerError('予約の追加に失敗しました。');
       return false;
     }
   };
@@ -337,6 +370,7 @@ export const App: React.FC = () => {
     defaultRoot: string
   ): Promise<boolean> => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const saved = await api.save_default_settings(settings, defaultRoot);
       setDefaultSettings(saved);
@@ -344,6 +378,7 @@ export const App: React.FC = () => {
       return true;
     } catch (err) {
       console.error('Failed to save default settings:', err);
+      setBannerError('基本設定の保存に失敗しました。');
       return false;
     }
   };
@@ -355,15 +390,18 @@ export const App: React.FC = () => {
     destination?: string
   ): Promise<boolean> => {
     const api = getBackendApi();
+    setBannerError(null);
     try {
       const updated = await api.update_job_settings(jobId, settings, resetFailed, destination);
       if (updated) {
         setQueue((prev) => prev.map((j) => (j.id === jobId ? updated : j)));
         return true;
       }
+      setBannerError('予約設定の更新に失敗しました。');
       return false;
     } catch (err) {
       console.error('Failed to update job settings:', err);
+      setBannerError('予約設定の更新に失敗しました。');
       return false;
     }
   };
@@ -429,6 +467,7 @@ export const App: React.FC = () => {
             onOpenJobSettings={handleOpenJobSettings}
             onDeleteJobs={handleDeleteJobs}
             onMoveJob={handleMoveJob}
+            onReorderJob={handleReorderJob}
             onRetryJob={handleRetryJob}
           />
         );
@@ -445,6 +484,17 @@ export const App: React.FC = () => {
       onStart={handleStartAnalysis}
       onCancel={handleCancelAnalysis}
     >
+      {bannerError && (
+        <div className="mx-3 mt-2 px-3 py-2 bg-[#FEF2F2] border border-[#F5C2C0] rounded-lg flex items-center justify-between text-xs text-[#C8332B] flex-shrink-0">
+          <span>{bannerError}</span>
+          <button
+            onClick={() => setBannerError(null)}
+            className="ml-3 font-bold hover:underline cursor-pointer"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
       {renderRightViewContent()}
     </RightWorkspaceShell>
   );

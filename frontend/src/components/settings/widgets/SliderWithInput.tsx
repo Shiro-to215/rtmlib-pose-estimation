@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 export interface SliderWithInputProps {
   label: string;
@@ -25,13 +25,39 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
   error,
   className = '',
 }) => {
+  const [draft, setDraft] = useState<string>(() => String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) {
+      setDraft(String(value));
+    }
+  }, [value, focused]);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
+    setDraft(raw);
     const num = parseFloat(raw);
-    if (!isNaN(num)) {
+    if (Number.isFinite(num)) {
       onChange(num);
     }
   };
+
+  const handleBlur = () => {
+    setFocused(false);
+    const num = parseFloat(draft);
+    if (!Number.isFinite(num)) {
+      setDraft(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, num));
+    if (clamped !== value) {
+      onChange(clamped);
+    }
+    setDraft(String(clamped));
+  };
+
+  const sliderVal = Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;
 
   return (
     <div className={`py-2 ${className}`}>
@@ -43,8 +69,10 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
             min={min}
             max={max}
             step={step}
-            value={value}
+            value={draft}
             onChange={handleInputChange}
+            onFocus={() => setFocused(true)}
+            onBlur={handleBlur}
             className="w-20 px-2 py-0.5 text-xs text-right font-mono border border-[#CBD5E1] rounded focus:border-[#0F766E] focus:outline-none bg-white text-[#1E293B]"
           />
           {unit && <span className="text-[11px] text-[#64748B] w-6">{unit}</span>}
@@ -57,7 +85,7 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
           min={min}
           max={max}
           step={step}
-          value={value}
+          value={sliderVal}
           onChange={(e) => onChange(parseFloat(e.target.value))}
           className="flex-1 h-1.5 bg-[#E2E8F0] rounded-lg appearance-none cursor-pointer accent-[#0F766E]"
         />
