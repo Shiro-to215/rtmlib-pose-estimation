@@ -66,9 +66,9 @@ export function useSettingsForm(
     }
     if (
       key === 'VITPOSE_BATCH_SIZE' &&
-      (!Number.isInteger(val) || val < 1 || val > 8)
+      (!Number.isInteger(val) || val < 1 || val > 64)
     ) {
-      return 'ViTPose++ のバッチサイズは 1 〜 8 の整数で指定してください。';
+      return 'ViTPose++ のバッチサイズは 1 〜 64 の整数で指定してください。';
     }
     if (key === 'YOLO_CLASSES') {
       if (

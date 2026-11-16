@@ -726,7 +726,7 @@ class BackendApi:
                 val = int(float(sanitized["VITPOSE_BATCH_SIZE"]))
             except (ValueError, TypeError):
                 val = 4
-            sanitized["VITPOSE_BATCH_SIZE"] = max(1, min(8, val))
+            sanitized["VITPOSE_BATCH_SIZE"] = max(1, min(64, val))
 
         if "POSE_ENGINE" in sanitized:
             sanitized["POSE_ENGINE"] = normalize_pose_engine(sanitized["POSE_ENGINE"])

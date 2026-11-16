@@ -303,10 +303,10 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           <div className="grid grid-cols-2 gap-4 mt-3">
             <SliderWithInput
               label="ViTPose++ バッチサイズ"
-              description="12GB VRAM での OOM 防止のため 1〜8 に制限（推奨: 4。VRAM不足時は自動で半減）"
+              description="1〜64 の範囲で指定（推奨: 4〜8、高VRAM GPU / Colab利用時は拡大可。VRAM不足時は自動調整）"
               value={values.VITPOSE_BATCH_SIZE ?? 4}
               min={1}
-              max={8}
+              max={64}
               step={1}
               unit="枚"
               onChange={(v) => setFieldValue('VITPOSE_BATCH_SIZE', Math.round(v))}
