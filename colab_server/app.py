@@ -165,22 +165,33 @@ def create_app(
         if last_event_id is not None and str(last_event_id).isdigit():
             cursor = max(cursor, int(last_event_id))
 
+        sse_flush_pad = f": {' ' * 2048}\n\n"
+
         async def _event_generator():
             nonlocal cursor
             last_heartbeat = time.monotonic()
+            # Initial padding flushes proxy response headers immediately over Cloudflare tunnels
+            yield sse_flush_pad
             while True:
                 events, is_terminal = await asyncio.to_thread(
-                    host.get_events_since, job_id, cursor, wait_timeout=2.0
+                    host.get_events_since, job_id, cursor, wait_timeout=0.25
                 )
                 if events:
+                    chunks: list[str] = []
                     for ev in events:
                         seq = int(ev.get("seq", 0))
                         cursor = max(cursor, seq)
                         ev_type = str(ev.get("type", "message"))
-                        yield f"id: {seq}\nevent: {ev_type}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                        chunks.append(
+                            f"id: {seq}\nevent: {ev_type}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                        )
+                    payload_block = "".join(chunks)
+                    if len(payload_block) < 2048:
+                        payload_block += sse_flush_pad
+                    yield payload_block
                     last_heartbeat = time.monotonic()
                 elif (time.monotonic() - last_heartbeat) >= SSE_KEEPALIVE_SECONDS:
-                    yield ": keepalive\n\n"
+                    yield f": keepalive\n{sse_flush_pad}"
                     last_heartbeat = time.monotonic()
 
                 if is_terminal:

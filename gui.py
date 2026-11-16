@@ -1521,8 +1521,12 @@ class WorkerModelCache:
         mem_info = _get_cuda_free_total_gb(str(yolo_device))
         model_factor = _yolo_model_vram_factor(str(yolo_model))
         pixel_factor = (max(int(yolo_imgsz), 320) / 640.0) ** 2
-        batch = max(1, int(yolo_batch_size))
-        min_free_gb = max(2.0, 1.0 + batch * 0.070 * model_factor * pixel_factor + 0.6)
+        # cap_yolo_batch_by_vram clamps large requested batches (e.g. 512) to fit remaining
+        # free VRAM, so only evict the cached pose model if free VRAM cannot fit a minimal probe batch.
+        max_probe_batch = 1 if pixel_factor >= 8.0 else 4
+        batch = min(max(1, int(yolo_batch_size)), max_probe_batch)
+        half_factor = 0.65 if str(yolo_device).lower().startswith("cuda") else 1.0
+        min_free_gb = max(2.0, 1.0 + batch * 0.070 * model_factor * pixel_factor * half_factor + 0.6)
         if mem_info is None or mem_info[0] < min_free_gb:
             free_desc = f"{mem_info[0]:.1f} GB" if mem_info is not None else "unknown"
             print(
@@ -1682,6 +1686,8 @@ def run_yolo_pass(
     print("PROGRESS:0:YOLO", flush=True)
 
     tracker_arg, temp_tracker_path = _create_synced_tracker_yaml(YOLO_TRACKER, YOLO_CONFIDENCE)
+    use_half = str(device).strip().lower().startswith("cuda")
+    extra_track_kwargs = {"half": True} if use_half else {}
 
     def _track_single(single_frame):
         return detector.track(
@@ -1695,6 +1701,7 @@ def run_yolo_pass(
             classes=YOLO_CLASSES,
             max_det=30,
             verbose=False,
+            **extra_track_kwargs,
         )
 
     def _emit_yolo_results(results_chunk) -> None:
@@ -1732,6 +1739,7 @@ def run_yolo_pass(
                     max_det=30,
                     batch=len(frames_chunk),
                     verbose=False,
+                    **extra_track_kwargs,
                 )
             except Exception as exc:
                 if not is_cuda_oom_error(exc):

@@ -337,10 +337,18 @@ class AnalysisWorkerManager:
         prefetch_futures: dict[str, Future[tuple[str, bool]]] = {}
         render_futures: list[tuple[Reservation, Future[int]]] = []
 
+        MAX_PREFETCH_AHEAD = 5
+
         def _schedule_next_prefetch(exclude_video_key: str) -> None:
             if self._stop_requested.is_set():
                 return
+            active_unfinished = sum(1 for fut in prefetch_futures.values() if not fut.done())
+            slots = max(0, MAX_PREFETCH_AHEAD - active_unfinished)
+            if slots <= 0:
+                return
             for candidate in self.reservations.snapshot_jobs():
+                if slots <= 0:
+                    break
                 if candidate.state != "pending":
                     continue
                 vkey = str(candidate.video)
@@ -351,7 +359,7 @@ class AnalysisWorkerManager:
                     candidate.video,
                     cancel_event=self._stop_requested,
                 )
-                break
+                slots -= 1
 
         try:
             while True:

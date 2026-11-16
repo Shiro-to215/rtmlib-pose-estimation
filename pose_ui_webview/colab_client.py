@@ -228,9 +228,14 @@ class ColabClient:
 
             resp = None
             try:
+                sse_headers = {
+                    **self._headers(),
+                    "Accept": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                }
                 resp = self._session.get(
                     self._url(f"/jobs/{remote_job_id}/events"),
-                    headers=self._headers(),
+                    headers=sse_headers,
                     params={"from_seq": str(last_seq)},
                     stream=True,
                     timeout=(10.0, 45.0),
@@ -240,7 +245,8 @@ class ColabClient:
                 event_data_lines: list[str] = []
                 event_id: str | None = None
 
-                for raw_line in resp.iter_lines(decode_unicode=True):
+                # chunk_size=1 prevents requests from buffering 512 bytes before yielding SSE lines
+                for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
                     if cancel_event is not None and cancel_event.is_set():
                         raise ColabCancelledError("Colab 解析を中断しました。")
 
