@@ -1,4 +1,4 @@
-import { InitialDataPayload, JobSettings, ReservationJob } from './models';
+import { ColabConfig, ColabHealthInfo, InitialDataPayload, JobSettings, ReservationJob } from './models';
 
 /**
  * Strongly typed interface representing the Python BackendApi endpoints exposed via PyWebView
@@ -39,6 +39,12 @@ export interface BackendApi {
     settings: Record<string, any>
   ): Promise<{ valid: boolean; error?: string; resolved?: Record<string, any> }>;
   get_output_preview_names(folderPath: string): Promise<Record<string, string>>;
+  get_colab_config(): Promise<ColabConfig>;
+  save_colab_config(config: Partial<ColabConfig>): Promise<{ status: string; config?: ColabConfig; message?: string }>;
+  test_colab_connection(
+    serverUrl?: string,
+    apiToken?: string
+  ): Promise<{ ok: boolean; health?: ColabHealthInfo; error?: string }>;
 }
 
 declare global {

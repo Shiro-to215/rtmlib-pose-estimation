@@ -1,0 +1,14 @@
+# Dependencies for Google Colab server runtime.
+# Keep Colab's preinstalled CUDA torch/torchvision intact (do NOT install Windows CUDA packages or pywebview).
+# Install rtmlib separately with: pip install --no-deps rtmlib==0.0.16
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+sse-starlette>=2.1.0
+ultralytics
+transformers
+onnxruntime-gpu
+onnx
+onnxscript
+opencv-python-headless
+psutil

@@ -11,6 +11,10 @@ export const RightWorkspaceShell: React.FC<RightWorkspaceShellProps> = ({
   isStopping,
   hasPendingJobs,
   bannerText,
+  executionTarget,
+  colabConfig,
+  onChangeExecutionTarget,
+  onOpenColabModal,
   onStart,
   onCancel,
 }) => {
@@ -22,6 +26,10 @@ export const RightWorkspaceShell: React.FC<RightWorkspaceShellProps> = ({
         isStopping={isStopping}
         hasPendingJobs={hasPendingJobs}
         bannerText={bannerText}
+        executionTarget={executionTarget}
+        colabConfig={colabConfig}
+        onChangeExecutionTarget={onChangeExecutionTarget}
+        onOpenColabModal={onOpenColabModal}
         onStart={onStart}
         onCancel={onCancel}
       />

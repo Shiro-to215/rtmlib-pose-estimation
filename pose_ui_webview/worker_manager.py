@@ -6,6 +6,7 @@ and pushes real-time events to the PyWebView React frontend.
 """
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
 import os
@@ -18,13 +19,14 @@ from typing import Any, Callable, Optional
 
 import gui
 from reservation_queue import Reservation, ReservationQueue, set_output, write_json
+from .colab_client import ColabCancelledError, ColabClient
 
 logger = logging.getLogger(__name__)
 
 
 class AnalysisWorkerManager:
-    """Manages sequential execution of analysis worker subprocesses,
-    captures stdout telemetry, and pushes progress and logs to the PyWebView frontend.
+    """Manages sequential execution of local or Colab analysis jobs,
+    captures telemetry, and pushes progress and logs to the PyWebView frontend.
     """
 
     def __init__(
@@ -34,12 +36,16 @@ class AnalysisWorkerManager:
         output_names_fn: Callable[[Path], dict[str, str]],
         window_provider: Optional[Callable[[], Any]] = None,
         job_serializer: Optional[Callable[[Reservation], dict[str, Any]]] = None,
+        colab_config_provider: Optional[Callable[[], dict[str, Any]]] = None,
+        colab_client_factory: Optional[Callable[[str, str], Any]] = None,
     ) -> None:
         self.base_dir = Path(base_dir).resolve()
         self.reservations = reservations
         self._output_names_fn = output_names_fn
         self._window_provider = window_provider
         self._job_serializer = job_serializer
+        self._colab_config_provider = colab_config_provider
+        self._colab_client_factory = colab_client_factory
 
         # Concurrency & state controls
         self._state_lock = threading.Lock()
@@ -51,6 +57,16 @@ class AnalysisWorkerManager:
         self._persistent_mode: Optional[bool] = None
         self._tail_buffer: list[str] = []
         self._queue_thread: Optional[threading.Thread] = None
+
+        # Colab remote + parallel local MP4 render controls
+        self._local_rendering_ids: set[str] = set()
+        self._active_remote_job_id: Optional[str] = None
+        self._active_colab_client: Optional[Any] = None
+
+    @property
+    def local_rendering_job_ids(self) -> set[str]:
+        with self._state_lock:
+            return set(self._local_rendering_ids)
 
     def set_window_provider(self, provider: Callable[[], Any]) -> None:
         """Sets the provider callable returning the active pywebview.Window."""
@@ -137,9 +153,7 @@ class AnalysisWorkerManager:
             watcher.start()
 
     def cancel_current_job(self) -> dict[str, Any]:
-        """Cooperatively interrupts the currently running worker subprocess,
-        escalating to terminate/kill only if the same process does not exit in time.
-        """
+        """Cooperatively interrupts the currently running local or Colab worker job."""
         with self._state_lock:
             if not self._is_running:
                 return {"status": "idle"}
@@ -147,6 +161,8 @@ class AnalysisWorkerManager:
             proc = self._current_process
             job_id = self._current_job_id or ""
             cancel_file = self._current_cancel_file
+            remote_job_id = self._active_remote_job_id
+            colab_client = self._active_colab_client
 
         # Signal cooperative cancellation via per-job flag file first
         if cancel_file is not None:
@@ -155,6 +171,15 @@ class AnalysisWorkerManager:
                 cancel_file.write_text("cancel\n", encoding="utf-8")
             except OSError:
                 pass
+
+        if remote_job_id and colab_client is not None:
+            def _cancel_remote() -> None:
+                try:
+                    colab_client.cancel_job(remote_job_id)
+                except Exception as exc:
+                    logger.debug("Remote Colab cancel request warning: %s", exc)
+
+            threading.Thread(target=_cancel_remote, daemon=True, name="ColabCancel").start()
 
         # Emit stopping notifications
         self._push_progress(job_id, 0.0, "STOPPING")
@@ -207,7 +232,24 @@ class AnalysisWorkerManager:
 
     # ---- Internal Queue Loop & Worker Execution ------------------------------
 
+    def _get_colab_config(self) -> dict[str, Any]:
+        if callable(self._colab_config_provider):
+            return dict(self._colab_config_provider() or {})
+        return {}
+
+    def _make_colab_client(self, cfg: dict[str, Any]) -> Any:
+        server_url = str(cfg.get("server_url") or "").strip()
+        api_token = str(cfg.get("api_token") or "").strip()
+        if callable(self._colab_client_factory):
+            return self._colab_client_factory(server_url, api_token)
+        return ColabClient(server_url, api_token)
+
     def _run_queue_loop(self) -> None:
+        colab_cfg = self._get_colab_config()
+        if str(colab_cfg.get("execution_target", "local")).strip().lower() == "colab":
+            self._run_colab_queue_loop(colab_cfg)
+            return
+
         try:
             while True:
                 with self._state_lock:
@@ -234,6 +276,244 @@ class AnalysisWorkerManager:
                 self._push_log("", "解析を中断しました。「解析開始」で先頭の動画から再開できます。\n")
             else:
                 self._push_log("", "すべての待機予約の解析が終了しました。\n")
+
+    def _run_local_render_task(self, job: Reservation, log_path: Path) -> int:
+        """Render the 3 MP4s locally from raw video + Colab-downloaded NPZ/CSV data."""
+        exit_code = 0
+        err_msg: str | None = None
+        try:
+            if self._stop_requested.is_set():
+                exit_code = -1
+            else:
+                gui.render_videos_from_data(
+                    job.video,
+                    job.output,
+                    job.settings,
+                    cancel_check=lambda: self._stop_requested.is_set(),
+                )
+        except Exception as exc:
+            if isinstance(exc, gui.AnalysisCancelledError) or self._stop_requested.is_set():
+                exit_code = -1
+            else:
+                logger.exception("Local MP4 render error for job %s: %s", job.id, exc)
+                exit_code = 1
+                err_msg = f"ローカル動画書き出しエラー: {exc}"
+        finally:
+            with self._state_lock:
+                self._local_rendering_ids.discard(job.id)
+                is_current = self._current_job_id == job.id
+
+        self._finalize_job_state(
+            job,
+            exit_code,
+            error_override=err_msg,
+            emit_progress=is_current,
+            emit_finished=is_current,
+        )
+        return exit_code
+
+    def _run_colab_queue_loop(self, colab_cfg: dict[str, Any]) -> None:
+        """Execute pending jobs via Colab GPU while prefetching uploads and parallel-rendering MP4s locally."""
+        try:
+            client = self._make_colab_client(colab_cfg)
+        except Exception as exc:
+            self._push_log("", f"Colab 接続エラー: {exc}\n")
+            with self._state_lock:
+                self._is_running = False
+                self._stop_requested.clear()
+                self._current_job_id = None
+            self._push_queue_status(False, None)
+            self._push_queue_update()
+            return
+
+        with self._state_lock:
+            self._active_colab_client = client
+
+        log_dir = self.base_dir / ".analysis_jobs" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        local_render_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LocalRender")
+        prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ColabPrefetch")
+        prefetch_futures: dict[str, Future[tuple[str, bool]]] = {}
+        render_futures: list[tuple[Reservation, Future[int]]] = []
+
+        def _schedule_next_prefetch(exclude_video_key: str) -> None:
+            if self._stop_requested.is_set():
+                return
+            for candidate in self.reservations.snapshot_jobs():
+                if candidate.state != "pending":
+                    continue
+                vkey = str(candidate.video)
+                if vkey == exclude_video_key or vkey in prefetch_futures or not candidate.video.is_file():
+                    continue
+                prefetch_futures[vkey] = prefetch_executor.submit(
+                    client.ensure_video_uploaded,
+                    candidate.video,
+                    cancel_event=self._stop_requested,
+                )
+                break
+
+        try:
+            while True:
+                with self._state_lock:
+                    if not self._is_running or self._stop_requested.is_set():
+                        break
+                    job = self.reservations.next_pending()
+                    if job is None:
+                        break
+                    self._current_job_id = job.id
+                    self._tail_buffer = []
+
+                if not job.video.is_file():
+                    self.reservations.mark_job_failed(job.id, f"入力動画が見つかりません: {job.video}")
+                    self._push_log(job.id, f"エラー ({job.video.name}): 入力動画が見つかりません\n")
+                    self._push_finished(job.id, -1)
+                    self._push_queue_update()
+                    continue
+
+                if self._stop_requested.is_set():
+                    self._push_finished(job.id, -1)
+                    self._push_queue_update()
+                    break
+
+                self.reservations.mark_job_running(job.id, output_names=self._output_names_fn)
+                log_path = log_dir / f"{job.id}.log"
+                self._push_started(job.id, job.video.name, str(job.output))
+                self._push_queue_status(True, job.id)
+                self._push_queue_update()
+                self._push_log(job.id, f"\n--- Colab 解析開始: {job.video.name} ---\n入力: {job.video}\n出力: {job.output}\n")
+
+                job_tail: list[str] = []
+                code = -1
+                cancelled_midway = False
+
+                try:
+                    vkey = str(job.video)
+                    prefetched = prefetch_futures.pop(vkey, None)
+                    if prefetched is not None:
+                        sha256, skipped = prefetched.result()
+                        if skipped:
+                            self._push_log(job.id, f"Colab キャッシュヒット（先読み確認済み）: {job.video.name}\n")
+                        else:
+                            self._push_log(job.id, f"先読みアップロード完了を使用: {job.video.name}\n")
+                    else:
+                        sha256, _ = client.ensure_video_uploaded(
+                            job.video,
+                            cancel_event=self._stop_requested,
+                            log_cb=lambda msg, jid=job.id: self._push_log(jid, msg),
+                        )
+
+                    # Start prefetching next pending video while GPU executes current job
+                    _schedule_next_prefetch(vkey)
+
+                    clean_settings: dict[str, Any] = {}
+                    engine_keys = set(getattr(gui, "ENGINE_DEFAULTS", {}))
+                    for k, v in job.settings.items():
+                        if k in engine_keys:
+                            clean_settings[k] = str(v) if isinstance(v, Path) else v
+
+                    remote_job_id = client.submit_job(sha256, clean_settings, output_mode="data_only")
+                    with self._state_lock:
+                        self._active_remote_job_id = remote_job_id
+
+                    with open(log_path, "w", encoding="utf-8") as log_file:
+                        def _on_progress(pct: float, phase: str) -> None:
+                            line = f"PROGRESS:{pct}:{phase}\n"
+                            log_file.write(line)
+                            log_file.flush()
+                            self._push_progress(job.id, pct, phase)
+
+                        def _on_log(line: str) -> None:
+                            log_file.write(line)
+                            log_file.flush()
+                            job_tail.append(line)
+                            if len(job_tail) > 24:
+                                del job_tail[:-24]
+                            with self._state_lock:
+                                self._tail_buffer.append(line)
+                                self._tail_buffer = self._tail_buffer[-16:]
+                            self._push_log(job.id, line)
+
+                        code = client.stream_job_events(
+                            remote_job_id,
+                            on_progress=_on_progress,
+                            on_log=_on_log,
+                            cancel_event=self._stop_requested,
+                        )
+
+                    if code == 0 and not self._stop_requested.is_set():
+                        self._push_log(job.id, f"--- Colab 推論完了。ZIP 結果を取得しています: {job.video.name} ---\n")
+                        client.download_and_extract_result(
+                            remote_job_id,
+                            job.output,
+                            cancel_event=self._stop_requested,
+                        )
+                        with self._state_lock:
+                            self._local_rendering_ids.add(job.id)
+                        self._push_log(
+                            job.id,
+                            f"--- ローカルで3本のMP4書き出しを開始（裏で並列実行）: {job.video.name} ---\n",
+                        )
+                        self._push_queue_update()
+                        fut = local_render_executor.submit(self._run_local_render_task, job, log_path)
+                        render_futures.append((job, fut))
+                        continue
+                except ColabCancelledError:
+                    cancelled_midway = True
+                    code = -1
+                except Exception as exc:
+                    if self._stop_requested.is_set():
+                        cancelled_midway = True
+                        code = -1
+                    else:
+                        logger.exception("Colab job execution error for %s: %s", job.id, exc)
+                        err_line = f"Colab 実行エラー: {exc}\n"
+                        job_tail.append(err_line)
+                        self._push_log(job.id, err_line)
+                        code = -1
+                finally:
+                    with self._state_lock:
+                        self._active_remote_job_id = None
+
+                # Non-zero exit or cancellation before handing off to LocalRenderExecutor
+                err_msg = None if (cancelled_midway or self._stop_requested.is_set()) else (
+                    f"終了コード {code}\n{''.join(job_tail)[-2000:].strip()}".strip()
+                )
+                self._finalize_job_state(job, code, error_override=err_msg)
+                if cancelled_midway or self._stop_requested.is_set():
+                    break
+        finally:
+            # Ensure prefetch tasks terminate cleanly before exiting loop
+            for pf in list(prefetch_futures.values()):
+                try:
+                    pf.result(timeout=5.0)
+                except Exception:
+                    pass
+            prefetch_executor.shutdown(wait=True, cancel_futures=True)
+
+            # Wait for all queued background local MP4 renders to finish (or revert on stop)
+            for _rendered_job, r_fut in render_futures:
+                try:
+                    r_fut.result()
+                except Exception as exc:
+                    logger.debug("Local render future error during cleanup: %s", exc)
+            local_render_executor.shutdown(wait=True)
+
+            with self._state_lock:
+                self._is_running = False
+                was_stopped = self._stop_requested.is_set()
+                self._stop_requested.clear()
+                self._current_job_id = None
+                self._active_remote_job_id = None
+                self._active_colab_client = None
+                self._local_rendering_ids.clear()
+
+            self._push_queue_status(False, None)
+            self._push_queue_update()
+            if was_stopped:
+                self._push_log("", "解析を中断しました。「解析開始」で先頭の動画から再開できます。\n")
+            else:
+                self._push_log("", "すべての待機予約の解析・ローカル動画書き出しが終了しました。\n")
 
     def _shutdown_persistent_worker(self, timeout_sec: float = 3.0) -> None:
         with self._state_lock:
@@ -481,25 +761,38 @@ class AnalysisWorkerManager:
         # Finalize job outcome
         self._finalize_job_state(job, code)
 
-    def _finalize_job_state(self, job: Reservation, exit_code: int) -> None:
+    def _finalize_job_state(
+        self,
+        job: Reservation,
+        exit_code: int,
+        *,
+        error_override: Optional[str] = None,
+        emit_progress: bool = True,
+        emit_finished: bool = True,
+    ) -> None:
         with self._state_lock:
             tail_lines = list(self._tail_buffer)
             was_stopped = self._stop_requested.is_set()
 
         if exit_code == 0:
             self.reservations.mark_job_done(job.id)
-            self._push_progress(job.id, 100.0, "完了")
+            if emit_progress:
+                self._push_progress(job.id, 100.0, "完了")
             self._push_log(job.id, f"--- 解析完了: {job.video.name} ---\n")
         elif was_stopped:
             self.reservations.revert_job_pending(job.id, prioritize=True)
             self._push_log(job.id, f"--- 中断: {job.video.name} を予約リストの先頭へ戻しました ---\n")
         else:
-            tail_text = "".join(tail_lines)[-2000:].strip()
-            err_msg = f"終了コード {exit_code}\n{tail_text}".strip()
+            if error_override:
+                err_msg = error_override
+            else:
+                tail_text = "".join(tail_lines)[-2000:].strip()
+                err_msg = f"終了コード {exit_code}\n{tail_text}".strip()
             self.reservations.mark_job_failed(job.id, err_msg)
             self._push_log(job.id, f"--- 解析失敗 ({job.video.name}, 終了コード: {exit_code}) ---\n")
 
-        self._push_finished(job.id, exit_code)
+        if emit_finished:
+            self._push_finished(job.id, exit_code)
         self._push_queue_update()
 
     # ---- PyWebView Push Helpers ----------------------------------------------
@@ -607,11 +900,15 @@ class AnalysisWorkerManager:
         with self._state_lock:
             active_job_id = self._current_job_id
             queue_active = self._is_running
+            local_rendering_ids = set(self._local_rendering_ids)
 
         jobs_payload = []
         for j in jobs_snapshot:
             if callable(self._job_serializer):
-                jobs_payload.append(self._job_serializer(j))
+                item = self._job_serializer(j)
+                if "local_rendering" not in item:
+                    item["local_rendering"] = j.id in local_rendering_ids
+                jobs_payload.append(item)
                 continue
             settings = gui.normalize_legacy_rtmlib_settings(dict(j.settings))
             for pk in ("INPUT_ROOT", "OUTPUT_ROOT"):
@@ -620,6 +917,7 @@ class AnalysisWorkerManager:
             jobs_payload.append({
                 "id": j.id,
                 "state": j.state,
+                "local_rendering": j.id in local_rendering_ids,
                 "error": j.error or "",
                 "created_at": j.created_at,
                 "video_path": str(j.video),

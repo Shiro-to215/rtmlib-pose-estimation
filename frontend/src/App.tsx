@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ColabConfig,
+  ColabHealthInfo,
+  ExecutionTarget,
   InitialDataPayload,
   JobSettings,
   LogEntry,
@@ -26,6 +29,15 @@ import { LeftMonitorPane } from './components/left_monitor/LeftMonitorPane';
 import { QueueListView } from './components/queue/QueueListView';
 import { AddReservationView } from './components/add_reservation/AddReservationView';
 import { SettingsView } from './components/settings/SettingsView';
+import { ColabConnectionModal } from './components/colab/ColabConnectionModal';
+
+const DEFAULT_COLAB_CONFIG: ColabConfig = {
+  execution_target: 'local',
+  server_url: '',
+  api_token: '',
+  remember_token: false,
+  last_health: null,
+};
 
 export const App: React.FC = () => {
   // Global Application State
@@ -46,10 +58,18 @@ export const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [isStopping, setIsStopping] = useState<boolean>(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeJobIdRef.current = activeJobId;
+  }, [activeJobId]);
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [phaseCode, setPhaseCode] = useState<string>('IDLE');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [bannerError, setBannerError] = useState<string | null>(null);
+
+  // Colab Remote Execution State
+  const [colabConfig, setColabConfig] = useState<ColabConfig>(DEFAULT_COLAB_CONFIG);
+  const [isColabModalOpen, setIsColabModalOpen] = useState<boolean>(false);
 
   // Right Pane View State
   const [activeView, setActiveView] = useState<RightViewType>('queue');
@@ -75,6 +95,9 @@ export const App: React.FC = () => {
         setSystemInfo(payload.system);
         setIsProcessing(Boolean(payload.system.is_processing || payload.system.queue_active));
         setActiveJobId(payload.system.current_job_id || payload.system.active_job_id || null);
+        if (payload.system.colab) {
+          setColabConfig({ ...DEFAULT_COLAB_CONFIG, ...payload.system.colab });
+        }
       }
     };
 
@@ -161,7 +184,10 @@ export const App: React.FC = () => {
       setPhaseCode('STARTING');
     });
 
-    const unsubFinished = subscribeToJobFinished((_jobId, returnCode) => {
+    const unsubFinished = subscribeToJobFinished((finishedJobId, returnCode) => {
+      if (activeJobIdRef.current && finishedJobId && finishedJobId !== activeJobIdRef.current) {
+        return;
+      }
       if (returnCode === 0) {
         setProgressPercent(100);
         setPhaseCode('DONE');
@@ -235,8 +261,58 @@ export const App: React.FC = () => {
     return '待機中の予約を上から順番に解析します。';
   }, [isStopping, isProcessing, activeJob, phaseCode, progressPercent]);
 
+  // Colab Config & Connection Handlers
+  const handleChangeExecutionTarget = async (target: ExecutionTarget) => {
+    if (isProcessing || target === colabConfig.execution_target) return;
+    const api = getBackendApi();
+    setBannerError(null);
+    try {
+      const res = await api.save_colab_config({ execution_target: target });
+      if (res && res.status === 'ok' && res.config) {
+        setColabConfig({ ...DEFAULT_COLAB_CONFIG, ...res.config });
+        if (target === 'colab' && !(res.config.server_url || '').trim()) {
+          setIsColabModalOpen(true);
+        }
+      } else if (res?.message) {
+        setBannerError(res.message);
+      }
+    } catch (err) {
+      console.error('Failed to change execution target:', err);
+      setBannerError('実行先の切り替えに失敗しました。');
+    }
+  };
+
+  const handleSaveColabConfig = async (
+    nextConfig: Partial<ColabConfig>
+  ): Promise<{ status: string; config?: ColabConfig; message?: string }> => {
+    const api = getBackendApi();
+    const res = await api.save_colab_config(nextConfig);
+    if (res && res.status === 'ok' && res.config) {
+      setColabConfig({ ...DEFAULT_COLAB_CONFIG, ...res.config });
+      setBannerError(null);
+    }
+    return res;
+  };
+
+  const handleTestColabConnection = async (
+    serverUrl: string,
+    apiToken: string
+  ): Promise<{ ok: boolean; health?: ColabHealthInfo; error?: string }> => {
+    const api = getBackendApi();
+    const res = await api.test_colab_connection(serverUrl, apiToken);
+    if (res.ok && res.health) {
+      setColabConfig((prev) => ({ ...prev, last_health: res.health }));
+    }
+    return res;
+  };
+
   // Top Bar Actions
   const handleStartAnalysis = async () => {
+    if (colabConfig.execution_target === 'colab' && !colabConfig.server_url.trim()) {
+      setBannerError('Google Colab サーバーの URL が未設定です。接続設定から入力してください。');
+      setIsColabModalOpen(true);
+      return;
+    }
     const api = getBackendApi();
     setBannerError(null);
     try {
@@ -479,6 +555,10 @@ export const App: React.FC = () => {
       isStopping={isStopping}
       hasPendingJobs={hasPendingJobs}
       bannerText={bannerText}
+      executionTarget={colabConfig.execution_target}
+      colabConfig={colabConfig}
+      onChangeExecutionTarget={handleChangeExecutionTarget}
+      onOpenColabModal={() => setIsColabModalOpen(true)}
       onStart={handleStartAnalysis}
       onCancel={handleCancelAnalysis}
     >
@@ -497,6 +577,18 @@ export const App: React.FC = () => {
     </RightWorkspaceShell>
   );
 
-  return <MainLayout leftPane={leftPane} rightPane={rightPane} />;
+  return (
+    <>
+      <MainLayout leftPane={leftPane} rightPane={rightPane} />
+      <ColabConnectionModal
+        isOpen={isColabModalOpen}
+        config={colabConfig}
+        isProcessing={isProcessing}
+        onClose={() => setIsColabModalOpen(false)}
+        onTestConnection={handleTestColabConnection}
+        onSave={handleSaveColabConfig}
+      />
+    </>
+  );
 };
 export default App;

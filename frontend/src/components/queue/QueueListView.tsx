@@ -26,8 +26,10 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
   onReorderJob,
   onRetryJob,
 }) => {
-  // Only display pending and failed jobs in the active queue list
-  const visibleJobs = jobs.filter((j) => j.state === 'pending' || j.state === 'failed');
+  // Display pending, failed, and background local-rendering jobs in the active queue list
+  const visibleJobs = jobs.filter(
+    (j) => j.state === 'pending' || j.state === 'failed' || Boolean(j.local_rendering)
+  );
 
   const pendingCount = jobs.filter((j) => j.state === 'pending').length;
   const failedCount = jobs.filter((j) => j.state === 'failed').length;
@@ -37,18 +39,22 @@ export const QueueListView: React.FC<QueueListViewProps> = ({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   useEffect(() => {
-    const visibleSet = new Set(visibleJobs.map((j) => j.id));
+    const selectableSet = new Set(
+      visibleJobs.filter((j) => !j.local_rendering).map((j) => j.id)
+    );
     setSelectedIds((prev) => {
-      const next = prev.filter((id) => visibleSet.has(id));
+      const next = prev.filter((id) => selectableSet.has(id));
       return next.length === prev.length ? prev : next;
     });
-    if (lastAnchorId && !visibleSet.has(lastAnchorId)) {
+    if (lastAnchorId && !selectableSet.has(lastAnchorId)) {
       setLastAnchorId(null);
     }
   }, [jobs]);
 
   // Selection logic supporting single, Ctrl (toggle), and Shift (range)
   const handleSelect = (e: React.MouseEvent, jobId: string) => {
+    const targetJob = visibleJobs.find((j) => j.id === jobId);
+    if (!targetJob || targetJob.local_rendering) return;
     if (e.ctrlKey || e.metaKey) {
       if (selectedIds.includes(jobId)) {
         setSelectedIds(selectedIds.filter((id) => id !== jobId));

@@ -434,18 +434,60 @@ def get_vitpose_onnx_path(
     return get_vitpose_onnx_cache_dir() / filename
 
 
+def verify_onnx_external_data(onnx_path: Path) -> bool:
+    """Return True if onnx_path exists and any referenced external weight files are present."""
+    if not onnx_path.is_file() or onnx_path.stat().st_size <= 0:
+        return False
+
+    companion_data = Path(f"{onnx_path}.data")
+    if companion_data.exists() and (not companion_data.is_file() or companion_data.stat().st_size <= 0):
+        return False
+
+    try:
+        onnx_mod = importlib.import_module("onnx")
+    except ImportError:
+        return True
+
+    try:
+        model = onnx_mod.load(str(onnx_path), load_external_data=False)
+    except Exception:
+        return False
+
+    external_loc_enum = getattr(getattr(onnx_mod, "TensorProto", None), "EXTERNAL", 1)
+    base_dir = onnx_path.parent.resolve()
+    checked_paths: set[Path] = set()
+    for init in getattr(getattr(model, "graph", None), "initializer", ()):
+        if getattr(init, "data_location", 0) != external_loc_enum:
+            continue
+        location = ""
+        for entry in getattr(init, "external_data", ()):
+            if getattr(entry, "key", "") == "location":
+                location = str(getattr(entry, "value", "")).strip()
+                break
+        if not location:
+            return False
+        ext_path = (base_dir / location).resolve()
+        if not ext_path.is_relative_to(base_dir):
+            return False
+        if ext_path not in checked_paths:
+            if not ext_path.is_file() or ext_path.stat().st_size <= 0:
+                return False
+            checked_paths.add(ext_path)
+    return True
+
+
 def has_cached_vitpose_onnx(
     model_size: str,
     input_size: str = "256x192",
     *,
     fp16: bool = False,
 ) -> bool:
-    """Return True if a non-empty cached ViTPose++ ONNX file exists."""
+    """Return True if a non-empty cached ViTPose++ ONNX file (and external weights) exists."""
     try:
         onnx_path = get_vitpose_onnx_path(model_size, input_size, fp16=fp16)
     except ValueError:
         return False
-    return onnx_path.is_file() and onnx_path.stat().st_size > 0
+    return verify_onnx_external_data(onnx_path)
 
 
 def _is_vitpose_from_pretrained_mocked() -> bool:

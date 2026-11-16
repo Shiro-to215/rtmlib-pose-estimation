@@ -39,5 +39,9 @@ declare module 'lucide-react' {
   export const CheckSquare: LucideIcon;
   export const Save: LucideIcon;
   export const Cpu: LucideIcon;
+  export const Cloud: LucideIcon;
+  export const EyeOff: LucideIcon;
+  export const Link2: LucideIcon;
+  export const Loader2: LucideIcon;
   export const Sparkles: LucideIcon;
 }

@@ -24,6 +24,7 @@ import gui
 from pose_estimators import validate_pose_settings as _validate_pose_settings
 from pose_estimators.factory import normalize_pose_engine
 from reservation_queue import Reservation, ReservationQueue, set_output, write_json
+from .colab_client import ColabClient, normalize_server_url
 from .worker_manager import AnalysisWorkerManager
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def serialize_reservation(
     job: Reservation | dict[str, Any],
     thumbnail: str = "",
     thumbnail_info: str = "",
+    local_rendering: bool = False,
 ) -> dict[str, Any]:
     """Converts a Reservation dataclass (or dict) into a JSON-serializable dictionary for JavaScript."""
     if isinstance(job, dict):
@@ -99,6 +101,7 @@ def serialize_reservation(
     return {
         "id": job_id,
         "state": state,
+        "local_rendering": bool(local_rendering),
         "error": error,
         "created_at": created_at,
         "video_path": video_path,
@@ -152,6 +155,7 @@ class BackendApi:
             if settings_file
             else (self.base_dir / "gui_settings.json")
         )
+        self.colab_config_file = self.base_dir / ".colab_config.json"
         self.queue_file = self.base_dir / "analysis_queue.json"
 
         # Engine defaults & choice specifications
@@ -170,6 +174,8 @@ class BackendApi:
 
         # Load persisted settings or fallback
         self.default_settings = self._load_default_settings()
+        self._colab_config = self._load_colab_config()
+        self._colab_last_health: dict[str, Any] | None = None
 
         # ReservationQueue initialization
         if reservations is not None:
@@ -189,9 +195,13 @@ class BackendApi:
                 output_names_fn=self._output_names_fn,
                 window_provider=lambda: self._window,
                 job_serializer=self.serialize_job,
+                colab_config_provider=self.get_colab_config,
             )
-        elif getattr(self.worker_manager, "_job_serializer", None) is None:
-            self.worker_manager._job_serializer = self.serialize_job
+        else:
+            if getattr(self.worker_manager, "_job_serializer", None) is None:
+                self.worker_manager._job_serializer = self.serialize_job
+            if getattr(self.worker_manager, "_colab_config_provider", None) is None:
+                self.worker_manager._colab_config_provider = self.get_colab_config
 
         # Fallback state flags if worker_manager not used directly
         self._is_processing = False
@@ -278,6 +288,7 @@ class BackendApi:
                     "choices": choices_data,
                     "labels": labels_data,
                     "groups": groups_data,
+                    "colab": self.get_colab_config(),
                 },
                 "choices": choices_data,
             }
@@ -530,12 +541,110 @@ class BackendApi:
             if pending is None:
                 return {"status": "empty"}
 
+            if self._colab_config.get("execution_target") == "colab":
+                if not str(self._colab_config.get("server_url") or "").strip():
+                    return {
+                        "status": "error",
+                        "message": "Colab サーバー URL が未設定です。「Colab 接続設定」から URL とトークンを入力してください。",
+                    }
+
             if self.worker_manager:
                 return self.worker_manager.start_queue()
 
             self._is_processing = True
             self._current_job_id = pending.id
             return {"status": "started", "job_id": pending.id}
+
+    # ---- Colab Connection Config & Health Endpoints --------------------------
+
+    def _load_colab_config(self) -> dict[str, Any]:
+        defaults: dict[str, Any] = {
+            "execution_target": "local",
+            "server_url": "",
+            "api_token": "",
+            "remember_token": False,
+        }
+        if self.colab_config_file.is_file():
+            try:
+                data = json.loads(self.colab_config_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    target = str(data.get("execution_target", "local")).strip().lower()
+                    defaults["execution_target"] = "colab" if target == "colab" else "local"
+                    defaults["server_url"] = str(data.get("server_url") or "").strip().rstrip("/")
+                    defaults["remember_token"] = bool(data.get("remember_token", False))
+                    if defaults["remember_token"]:
+                        defaults["api_token"] = str(data.get("api_token") or "").strip()
+            except Exception as exc:
+                logger.warning("Could not read Colab config from %s (%s); using defaults", self.colab_config_file, exc)
+        return defaults
+
+    def get_colab_config(self) -> dict[str, Any]:
+        """Returns current Colab execution target and connection configuration."""
+        with self._lock:
+            cfg = deepcopy(self._colab_config)
+            cfg["last_health"] = deepcopy(self._colab_last_health)
+            return cfg
+
+    def save_colab_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Validates and updates Colab execution target and connection configuration."""
+        if not isinstance(config, dict):
+            return {"status": "error", "message": "設定データの形式が不正です。"}
+
+        with self._lock:
+            new_target = str(config.get("execution_target", self._colab_config["execution_target"])).strip().lower()
+            if new_target not in ("local", "colab"):
+                new_target = "local"
+
+            if new_target != self._colab_config.get("execution_target") and self.is_processing:
+                return {"status": "error", "message": "解析実行中は実行先を切り替えられません。"}
+
+            raw_url = str(config.get("server_url", self._colab_config.get("server_url", "")) or "").strip().rstrip("/")
+            if raw_url:
+                try:
+                    raw_url = normalize_server_url(raw_url)
+                except ValueError as exc:
+                    return {"status": "error", "message": str(exc)}
+
+            remember_token = bool(config.get("remember_token", self._colab_config.get("remember_token", False)))
+            if "api_token" in config:
+                api_token = str(config.get("api_token") or "").strip()
+            else:
+                api_token = str(self._colab_config.get("api_token") or "")
+
+            url_changed = raw_url != self._colab_config.get("server_url")
+            self._colab_config = {
+                "execution_target": new_target,
+                "server_url": raw_url,
+                "api_token": api_token,
+                "remember_token": remember_token,
+            }
+            if url_changed:
+                self._colab_last_health = None
+
+            disk_payload = {
+                "execution_target": new_target,
+                "server_url": raw_url,
+                "remember_token": remember_token,
+                "api_token": api_token if remember_token else "",
+            }
+            write_json(self.colab_config_file, disk_payload)
+            return {"status": "ok", "config": self.get_colab_config()}
+
+    def test_colab_connection(self, server_url: str = "", api_token: str = "") -> dict[str, Any]:
+        """Tests connectivity and auth against a Google Colab FastAPI server via GET /health."""
+        with self._lock:
+            target_url = str(server_url or self._colab_config.get("server_url") or "").strip()
+            target_token = str(api_token or self._colab_config.get("api_token") or "").strip()
+        try:
+            normalized = normalize_server_url(target_url)
+            client = ColabClient(normalized, target_token)
+            health = client.check_health(timeout=10.0)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+        with self._lock:
+            self._colab_last_health = deepcopy(health)
+        return {"ok": True, "health": health}
 
     def cancel_current_job(self) -> dict[str, Any]:
         """Interrupts currently running job and stops queue execution."""
@@ -769,7 +878,10 @@ class BackendApi:
         if not thumb:
             thumb = self._thumbnails.get(job.id, "")
             info = self._thumb_info.get(job.id, "")
-        return serialize_reservation(job, thumbnail=thumb, thumbnail_info=info)
+        local_rendering = bool(
+            self.worker_manager and job.id in getattr(self.worker_manager, "local_rendering_job_ids", set())
+        )
+        return serialize_reservation(job, thumbnail=thumb, thumbnail_info=info, local_rendering=local_rendering)
 
     def _load_default_settings(self) -> dict[str, Any]:
         """Loads global default settings (excluding per-job I/O keys) from JSON or engine defaults."""

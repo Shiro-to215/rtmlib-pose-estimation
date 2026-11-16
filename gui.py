@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from copy import deepcopy
 import csv
+import importlib
 import json
 import math
 import os
@@ -30,6 +32,7 @@ from pose_estimators import (
     resolve_vitpose_selection,
     validate_pose_settings,
 )
+from pose_estimators.base import get_udp_warp_matrix
 from pose_estimators.factory import normalize_pose_engine
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -91,6 +94,18 @@ VITPOSE_PRECISION = "fp16"
 
 # 対象選定戦略（"long_jump" / "legacy"）
 TARGET_SELECTION_STRATEGY = "long_jump"
+
+# 出力モード（ENGINE_DEFAULTS には含めず内部制御用: "full" | "data_only" | "web_video"）
+OUTPUT_MODE = "full"
+VALID_OUTPUT_MODES = ("full", "data_only", "web_video")
+
+
+def normalize_output_mode(value: object) -> str:
+    """Normalize internal output mode option to full, data_only, or web_video."""
+    mode = str(value or "full").strip().lower()
+    if mode in VALID_OUTPUT_MODES:
+        return mode
+    return "full"
 
 # 各種設定
 CAPTURE_FPS = None
@@ -622,21 +637,162 @@ def cap_yolo_batch_by_vram(
     return requested
 
 
-def annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores) -> None:
+def _get_available_system_ram_bytes() -> int | None:
+    """Return currently available system RAM in bytes if determinable."""
+    try:
+        psutil_mod = importlib.import_module("psutil")
+        avail = int(psutil_mod.virtual_memory().available)
+        if avail > 0:
+            return avail
+    except Exception:
+        pass
+
+    try:
+        meminfo = Path("/proc/meminfo")
+        if meminfo.is_file():
+            for line in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) * 1024
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            status = _MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except Exception:
+            pass
+    return None
+
+
+def _cap_max_buffered_by_ram(
+    default_max_buffered: int,
+    effective_pose_batch: int,
+    width: int,
+    height: int,
+    avail_bytes: int | None = None,
+) -> int:
+    """Cap full-frame RAM buffer count safely under low-RAM runtimes (e.g., Colab 12.7 GB)."""
+    default_cap = max(1, int(default_max_buffered))
+    if avail_bytes is None:
+        avail_bytes = _get_available_system_ram_bytes()
+    if avail_bytes is None or avail_bytes <= 0:
+        return default_cap
+
+    frame_bytes = max(1, int(width) * int(height) * 3)
+    budget_bytes = int(avail_bytes * 0.35)
+    min_floor = max(1, min(int(effective_pose_batch), 8))
+    ram_safe_frames = max(min_floor, budget_bytes // frame_bytes)
+    return min(default_cap, ram_safe_frames)
+
+
+def _compute_overlay_params(
+    width: int,
+    height: int,
+    crop_w: int,
+    crop_h: int,
+    settings: dict | None = None,
+) -> dict:
+    """Compute consistent full-frame and crop overlay styling parameters."""
+    import numpy as np
+
+    cfg = settings if isinstance(settings, dict) else globals()
+    kpt_thr = float(cfg.get("KEYPOINT_THRESHOLD", globals().get("KEYPOINT_THRESHOLD", 0.45)))
+    label_font_scale = max(0.3, float(cfg.get("LABEL_FONT_SCALE", globals().get("LABEL_FONT_SCALE", 1.0))))
+    label_thickness = max(1, int(round(2.0 * label_font_scale)))
+    skel_line_w = max(1, int(cfg.get("SKELETON_LINE_WIDTH", globals().get("SKELETON_LINE_WIDTH", 2))))
+    kpt_rad = max(1, int(cfg.get("KEYPOINT_RADIUS", globals().get("KEYPOINT_RADIUS", 4))))
+    crop_scale_ratio = max(
+        0.4,
+        min(1.0, (max(crop_w, crop_h) / max(min(width, height), 1)) * 1.5),
+    )
+    crop_line_w = max(1, int(round(skel_line_w * crop_scale_ratio)))
+    crop_kpt_rad = max(1, int(round(kpt_rad * crop_scale_ratio)))
+    crop_udp_span = np.array([max(crop_w - 1, 1), max(crop_h - 1, 1)], dtype=np.float32)
+    return {
+        "kpt_thr": kpt_thr,
+        "label_font_scale": label_font_scale,
+        "label_thickness": label_thickness,
+        "skel_line_w": skel_line_w,
+        "kpt_rad": kpt_rad,
+        "crop_line_w": crop_line_w,
+        "crop_kpt_rad": crop_kpt_rad,
+        "crop_udp_span": crop_udp_span,
+    }
+
+
+def _draw_frame_index_label(frame, idx: int, label_font_scale: float, label_thickness: int) -> None:
+    """Draw 1-based frame index text onto frame in-place."""
+    cv2.putText(
+        frame,
+        f"Frame: {idx + 1}",
+        (40, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        label_font_scale,
+        (0, 0, 255),
+        label_thickness,
+        cv2.LINE_AA,
+    )
+
+
+def annotate_pose_on_frame(
+    frame,
+    target_box,
+    restored_keypoints,
+    pose_scores,
+    *,
+    keypoint_threshold: float | None = None,
+    skeleton_line_width: int | None = None,
+    keypoint_radius: int | None = None,
+) -> None:
     """Draw skeleton directly onto frame in-place without sub-region cropping."""
     import numpy as np
 
     if restored_keypoints is None or pose_scores is None:
         return
+    kpt_thr = (
+        float(keypoint_threshold)
+        if keypoint_threshold is not None
+        else float(globals().get("KEYPOINT_THRESHOLD", 0.45))
+    )
+    line_w = (
+        int(skeleton_line_width)
+        if skeleton_line_width is not None
+        else int(globals().get("SKELETON_LINE_WIDTH", 2))
+    )
+    kpt_rad = (
+        int(keypoint_radius)
+        if keypoint_radius is not None
+        else int(globals().get("KEYPOINT_RADIUS", 4))
+    )
     kpts_arr = np.asarray([restored_keypoints], dtype=np.float32)
     scores_arr = np.asarray([pose_scores], dtype=np.float32)
     annotated = draw_pose_skeleton(
         frame,
         kpts_arr,
         scores_arr,
-        kpt_thr=KEYPOINT_THRESHOLD,
-        skeleton_line_width=int(globals().get("SKELETON_LINE_WIDTH", 2)),
-        keypoint_radius=int(globals().get("KEYPOINT_RADIUS", 4)),
+        kpt_thr=kpt_thr,
+        skeleton_line_width=line_w,
+        keypoint_radius=kpt_rad,
     )
     if annotated is not None and annotated is not frame:
         np.copyto(frame, annotated)
@@ -1777,6 +1933,9 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     )
     pose_init_seconds = perf_counter() - pose_init_started_at
 
+    output_mode = normalize_output_mode(globals().get("OUTPUT_MODE", "full"))
+    write_videos = output_mode != "data_only"
+
     try:
         pose_started_at = perf_counter()
         capture = cv2.VideoCapture(str(input_video))
@@ -1788,33 +1947,36 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         writer = None
         crop_writer = None
         crop_skeleton_writer = None
-        try:
-            writer, writer_fps = open_mp4v_writer(output_video, fps, width, height)
-            if not writer.isOpened():
-                raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
-            if writer_fps != fps:
-                print(
-                    f"動画書き出しFPS調整: {fps:.6f} -> {writer_fps:.3f} (mp4v制限対応)",
-                    flush=True,
+        if write_videos:
+            try:
+                writer, writer_fps = open_mp4v_writer(output_video, fps, width, height)
+                if not writer.isOpened():
+                    raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
+                if writer_fps != fps:
+                    print(
+                        f"動画書き出しFPS調整: {fps:.6f} -> {writer_fps:.3f} (mp4v制限対応)",
+                        flush=True,
+                    )
+                crop_writer, _ = open_mp4v_writer(output_crop_video, fps, crop_w, crop_h)
+                if not crop_writer.isOpened():
+                    raise RuntimeError(
+                        f"Could not create crop output video: {output_crop_video.resolve()}"
+                    )
+                crop_skeleton_writer, _ = open_mp4v_writer(
+                    output_crop_skeleton_video, fps, crop_w, crop_h
                 )
-            crop_writer, _ = open_mp4v_writer(output_crop_video, fps, crop_w, crop_h)
-            if not crop_writer.isOpened():
-                raise RuntimeError(
-                    f"Could not create crop output video: {output_crop_video.resolve()}"
-                )
-            crop_skeleton_writer, _ = open_mp4v_writer(
-                output_crop_skeleton_video, fps, crop_w, crop_h
-            )
-            if not crop_skeleton_writer.isOpened():
-                raise RuntimeError(
-                    f"Could not create crop skeleton output video: {output_crop_skeleton_video.resolve()}"
-                )
-        except Exception:
-            for w in (crop_skeleton_writer, crop_writer, writer):
-                if w is not None:
-                    w.release()
-            capture.release()
-            raise
+                if not crop_skeleton_writer.isOpened():
+                    raise RuntimeError(
+                        f"Could not create crop skeleton output video: {output_crop_skeleton_video.resolve()}"
+                    )
+            except Exception:
+                for w in (crop_skeleton_writer, crop_writer, writer):
+                    if w is not None:
+                        w.release()
+                capture.release()
+                raise
+        else:
+            print("出力モード: data_only（MP4動画生成をスキップし数値データのみ出力します）", flush=True)
 
         requested_batch = (
             globals().get("VITPOSE_BATCH_SIZE", 4)
@@ -1838,7 +2000,7 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 effective_pose_batch = 1
         print(f"{phase_label}バッチサイズ: {effective_pose_batch}", flush=True)
 
-        black_crop = np.zeros((crop_h, crop_w, 3), dtype=np.uint8)
+        black_crop = np.zeros((crop_h, crop_w, 3), dtype=np.uint8) if write_videos else None
 
         with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
             csv_writer = csv.DictWriter(csv_file, fieldnames=get_csv_fieldnames())
@@ -1850,12 +2012,14 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 max_frames=len(target_boxes),
             )
             writer_queue_size = max(8, min(32, effective_pose_batch + 8))
-            writer_worker = AsyncVideoWriter(writer, max_queue_size=writer_queue_size)
-            crop_writer_worker = AsyncVideoWriter(
-                crop_writer, max_queue_size=writer_queue_size
+            writer_worker = AsyncVideoWriter(writer, max_queue_size=writer_queue_size) if write_videos else None
+            crop_writer_worker = (
+                AsyncVideoWriter(crop_writer, max_queue_size=writer_queue_size) if write_videos else None
             )
-            crop_skeleton_writer_worker = AsyncVideoWriter(
-                crop_skeleton_writer, max_queue_size=writer_queue_size
+            crop_skeleton_writer_worker = (
+                AsyncVideoWriter(crop_skeleton_writer, max_queue_size=writer_queue_size)
+                if write_videos
+                else None
             )
             batch_buffer: dict = {}
             frame_count = 0
@@ -1868,17 +2032,12 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 effective_pose_batch = total_pose_frames
             aborted = False
 
-            label_font_scale = max(0.3, float(globals().get("LABEL_FONT_SCALE", 1.0)))
-            label_thickness = max(1, int(round(2.0 * label_font_scale)))
-            skel_line_w = max(1, int(globals().get("SKELETON_LINE_WIDTH", 2)))
-            kpt_rad = max(1, int(globals().get("KEYPOINT_RADIUS", 4)))
-            crop_scale_ratio = max(
-                0.4,
-                min(1.0, (max(crop_w, crop_h) / max(min(width, height), 1)) * 1.5),
-            )
-            crop_line_w = max(1, int(round(skel_line_w * crop_scale_ratio)))
-            crop_kpt_rad = max(1, int(round(kpt_rad * crop_scale_ratio)))
-            crop_udp_span = np.array([max(crop_w - 1, 1), max(crop_h - 1, 1)], dtype=np.float32)
+            overlay = _compute_overlay_params(width, height, crop_w, crop_h)
+            label_font_scale = overlay["label_font_scale"]
+            label_thickness = overlay["label_thickness"]
+            crop_line_w = overlay["crop_line_w"]
+            crop_kpt_rad = overlay["crop_kpt_rad"]
+            crop_udp_span = overlay["crop_udp_span"]
 
             npz_target_boxes: list[list[float]] = []
             npz_box_states: list[int] = []
@@ -1907,41 +2066,46 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
 
                 if restored_keypoints is not None:
                     pose_success_count += 1
-                    annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
+                    if write_videos:
+                        annotate_pose_on_frame(frame, target_box, restored_keypoints, pose_scores)
 
                 if crop_info is not None:
                     crop_bgr, crop_center, crop_scale = crop_info
-                    crop_writer_worker.write(crop_bgr)
                     c_arr = np.asarray(crop_center, dtype=np.float32)
                     s_arr = np.asarray(crop_scale, dtype=np.float32)
                     npz_crop_centers.append([float(c_arr[0]), float(c_arr[1])])
                     npz_crop_scales.append([float(s_arr[0]), float(s_arr[1])])
-                    try:
-                        crop_skeleton = estimator.render_pose_on_crop(
-                            crop_bgr,
-                            restored_keypoints,
-                            pose_scores,
-                            crop_center,
-                            crop_scale,
-                            KEYPOINT_THRESHOLD,
-                            skeleton_line_width=crop_line_w,
-                            keypoint_radius=crop_kpt_rad,
-                        )
-                    except TypeError:
-                        crop_skeleton = estimator.render_pose_on_crop(
-                            crop_bgr,
-                            restored_keypoints,
-                            pose_scores,
-                            crop_center,
-                            crop_scale,
-                            KEYPOINT_THRESHOLD,
-                        )
-                    crop_skeleton_writer_worker.write(crop_skeleton)
+                    if write_videos:
+                        assert crop_writer_worker is not None and crop_skeleton_writer_worker is not None
+                        crop_writer_worker.write(crop_bgr)
+                        try:
+                            crop_skeleton = estimator.render_pose_on_crop(
+                                crop_bgr,
+                                restored_keypoints,
+                                pose_scores,
+                                crop_center,
+                                crop_scale,
+                                KEYPOINT_THRESHOLD,
+                                skeleton_line_width=crop_line_w,
+                                keypoint_radius=crop_kpt_rad,
+                            )
+                        except TypeError:
+                            crop_skeleton = estimator.render_pose_on_crop(
+                                crop_bgr,
+                                restored_keypoints,
+                                pose_scores,
+                                crop_center,
+                                crop_scale,
+                                KEYPOINT_THRESHOLD,
+                            )
+                        crop_skeleton_writer_worker.write(crop_skeleton)
                 else:
                     npz_crop_centers.append([np.nan, np.nan])
                     npz_crop_scales.append([np.nan, np.nan])
-                    crop_writer_worker.write(black_crop)
-                    crop_skeleton_writer_worker.write(black_crop)
+                    if write_videos:
+                        assert crop_writer_worker is not None and crop_skeleton_writer_worker is not None
+                        crop_writer_worker.write(black_crop)
+                        crop_skeleton_writer_worker.write(black_crop)
 
                 if restored_keypoints is not None and pose_scores is not None:
                     k_arr = np.asarray(restored_keypoints, dtype=np.float32)
@@ -1981,18 +2145,10 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
 
                 csv_writer.writerow(make_csv_row(frame_data))
 
-                cv2.putText(
-                    frame,
-                    f"Frame: {idx + 1}",
-                    (40, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    label_font_scale,
-                    (0, 0, 255),
-                    label_thickness,
-                    cv2.LINE_AA,
-                )
-
-                writer_worker.write(frame)
+                if write_videos:
+                    assert writer_worker is not None
+                    _draw_frame_index_label(frame, idx, label_font_scale, label_thickness)
+                    writer_worker.write(frame)
                 frame_count += 1
 
                 if total_pose_frames > 0:
@@ -2005,14 +2161,20 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                 print(f"PROGRESS:50:{phase_code}", flush=True)
                 next_read_idx = 0
                 eof = False
+                default_max_buffered = min(
+                    effective_pose_batch + 64,
+                    max(effective_pose_batch * 2, 16),
+                )
+                max_buffered = _cap_max_buffered_by_ram(
+                    default_max_buffered,
+                    effective_pose_batch,
+                    width,
+                    height,
+                )
                 while next_read_idx < total_pose_frames and not eof:
                     _check_cancel_requested()
                     buffered = []
                     valid_positions = []
-                    max_buffered = min(
-                        effective_pose_batch + 64,
-                        max(effective_pose_batch * 2, 16),
-                    )
                     while (
                         next_read_idx < total_pose_frames
                         and len(valid_positions) < effective_pose_batch
@@ -2110,18 +2272,21 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
                     reader.close()
                 finally:
                     try:
-                        writer_worker.close(drain=not aborted)
+                        if writer_worker is not None:
+                            writer_worker.close(drain=not aborted)
                     finally:
                         try:
-                            crop_writer_worker.close(drain=not aborted)
+                            if crop_writer_worker is not None:
+                                crop_writer_worker.close(drain=not aborted)
                         finally:
                             try:
-                                crop_skeleton_writer_worker.close(drain=not aborted)
+                                if crop_skeleton_writer_worker is not None:
+                                    crop_skeleton_writer_worker.close(drain=not aborted)
                             finally:
                                 capture.release()
-                                writer.release()
-                                crop_writer.release()
-                                crop_skeleton_writer.release()
+                                for w in (writer, crop_writer, crop_skeleton_writer):
+                                    if w is not None:
+                                        w.release()
 
         pose_elapsed_seconds = pose_init_seconds + perf_counter() - pose_started_at
         pose_display_name = estimator.display_name
@@ -2250,9 +2415,12 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     )
 
     print(f"Finished: {frame_count} frames")
-    print(f"Output: {output_video.resolve()}")
-    print(f"Crop: {output_crop_video.resolve()}")
-    print(f"Crop Skeleton: {output_crop_skeleton_video.resolve()}")
+    if write_videos:
+        print(f"Output: {output_video.resolve()}")
+        print(f"Crop: {output_crop_video.resolve()}")
+        print(f"Crop Skeleton: {output_crop_skeleton_video.resolve()}")
+    else:
+        print("Output Videos: skipped (data_only)")
     print(f"CSV: {output_csv.resolve()}")
     print(f"Metadata: {output_metadata.resolve()}")
     print(f"Metadata JSON: {output_metadata_json.resolve()}")
@@ -2265,6 +2433,219 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     print(f"YOLO分析速度: {yolo_analysis_fps:.2f} フレーム/秒", flush=True)
     print(f"{phase_label}分析時間: {pose_elapsed_seconds:.2f} 秒", flush=True)
     print(f"{phase_label}分析速度: {pose_analysis_fps:.2f} フレーム/秒", flush=True)
+
+
+def render_videos_from_data(
+    input_video: Path | str,
+    output_directory: Path | str,
+    settings: dict | None = None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> dict[str, Path]:
+    """Render full, crop, and crop-skeleton MP4 videos from raw video + saved NPZ/metadata."""
+    import numpy as np
+
+    if "cv2" not in globals():
+        globals()["cv2"] = importlib.import_module("cv2")
+
+    in_path = Path(input_video)
+    out_dir = Path(output_directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cfg = dict(settings or {})
+    default_names = output_names(out_dir)
+
+    output_video = out_dir / (cfg.get("OUTPUT_VIDEO_NAME") or default_names["OUTPUT_VIDEO_NAME"])
+    output_crop_video = out_dir / (
+        cfg.get("OUTPUT_CROP_VIDEO_NAME") or default_names["OUTPUT_CROP_VIDEO_NAME"]
+    )
+    output_crop_skeleton_video = out_dir / (
+        cfg.get("OUTPUT_CROP_SKELETON_VIDEO_NAME")
+        or default_names["OUTPUT_CROP_SKELETON_VIDEO_NAME"]
+    )
+    output_npz = out_dir / (cfg.get("OUTPUT_NPZ_NAME") or default_names["OUTPUT_NPZ_NAME"])
+    output_metadata_json = out_dir / (
+        cfg.get("OUTPUT_METADATA_JSON_NAME") or default_names["OUTPUT_METADATA_JSON_NAME"]
+    )
+
+    if not in_path.is_file():
+        raise FileNotFoundError(f"Input video not found for local render: {in_path}")
+    if not output_npz.is_file():
+        raise FileNotFoundError(f"NPZ data file not found for local render: {output_npz}")
+
+    with np.load(output_npz) as npz_data:
+        frame_indices = np.asarray(npz_data["frame_indices"], dtype=np.int32)
+        keypoints_xy = np.asarray(npz_data["keypoints_xy"], dtype=np.float32)
+        keypoints_score = np.asarray(npz_data["keypoints_score"], dtype=np.float32)
+        crop_centers = np.asarray(npz_data["crop_centers"], dtype=np.float32)
+        crop_scales = np.asarray(npz_data["crop_scales"], dtype=np.float32)
+        crop_size = np.asarray(npz_data["crop_size"], dtype=np.int32)
+        crop_keypoints_xy = np.asarray(npz_data["crop_keypoints_xy"], dtype=np.float32)
+
+    actual_t = int(len(frame_indices))
+    if len(crop_size) < 2:
+        raise ValueError(f"Invalid crop_size in NPZ: {crop_size!r}")
+    crop_w, crop_h = max(1, int(crop_size[0])), max(1, int(crop_size[1]))
+
+    playback_fps = 0.0
+    if output_metadata_json.is_file():
+        try:
+            meta = json.loads(output_metadata_json.read_text(encoding="utf-8"))
+            playback_fps = float(meta.get("video", {}).get("playback_fps") or 0.0)
+        except Exception:
+            playback_fps = 0.0
+
+    capture = cv2.VideoCapture(str(in_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open input video for local render: {in_path.resolve()}")
+
+    writer = None
+    crop_writer = None
+    crop_skeleton_writer = None
+    writer_worker = None
+    crop_writer_worker = None
+    crop_skeleton_writer_worker = None
+    aborted = False
+
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"Invalid video dimensions ({width}x{height}) for {in_path}")
+        if playback_fps <= 0.0 or not math.isfinite(playback_fps):
+            playback_fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
+
+        overlay = _compute_overlay_params(width, height, crop_w, crop_h, settings=cfg)
+        kpt_thr = overlay["kpt_thr"]
+        skel_line_w = overlay["skel_line_w"]
+        kpt_rad = overlay["kpt_rad"]
+        crop_line_w = overlay["crop_line_w"]
+        crop_kpt_rad = overlay["crop_kpt_rad"]
+        label_font_scale = overlay["label_font_scale"]
+        label_thickness = overlay["label_thickness"]
+
+        writer, _ = open_mp4v_writer(output_video, playback_fps, width, height)
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not create output video: {output_video.resolve()}")
+        crop_writer, _ = open_mp4v_writer(output_crop_video, playback_fps, crop_w, crop_h)
+        if not crop_writer.isOpened():
+            raise RuntimeError(f"Could not create crop output video: {output_crop_video.resolve()}")
+        crop_skeleton_writer, _ = open_mp4v_writer(
+            output_crop_skeleton_video, playback_fps, crop_w, crop_h
+        )
+        if not crop_skeleton_writer.isOpened():
+            raise RuntimeError(
+                f"Could not create crop skeleton output video: {output_crop_skeleton_video.resolve()}"
+            )
+
+        writer_worker = AsyncVideoWriter(writer, max_queue_size=16)
+        crop_writer_worker = AsyncVideoWriter(crop_writer, max_queue_size=16)
+        crop_skeleton_writer_worker = AsyncVideoWriter(crop_skeleton_writer, max_queue_size=16)
+        black_crop = np.zeros((crop_h, crop_w, 3), dtype=np.uint8)
+        last_reported_pct = -1
+
+        for idx in range(actual_t):
+            if (cancel_check is not None and cancel_check()) or _CANCEL_EVENT.is_set():
+                raise AnalysisCancelledError("ローカル動画書き出しをキャンセルしました。")
+
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                raise RuntimeError(
+                    f"Input video ended early during local render at frame {idx}/{actual_t}: {in_path}"
+                )
+
+            has_kpts = (
+                idx < len(keypoints_xy)
+                and idx < len(keypoints_score)
+                and not np.isnan(keypoints_xy[idx]).all()
+                and not np.isnan(keypoints_score[idx]).all()
+            )
+
+            has_crop = (
+                idx < len(crop_centers)
+                and idx < len(crop_scales)
+                and not np.isnan(crop_centers[idx]).any()
+                and not np.isnan(crop_scales[idx]).any()
+            )
+
+            if has_crop:
+                warp_mat = get_udp_warp_matrix(crop_centers[idx], crop_scales[idx], (crop_w, crop_h))
+                crop_bgr = cv2.warpAffine(frame, warp_mat, (crop_w, crop_h), flags=cv2.INTER_LINEAR)
+                crop_writer_worker.write(crop_bgr)
+
+                has_crop_kpts = (
+                    has_kpts
+                    and idx < len(crop_keypoints_xy)
+                    and not np.isnan(crop_keypoints_xy[idx]).all()
+                )
+                if has_crop_kpts:
+                    crop_skeleton = draw_pose_skeleton(
+                        crop_bgr.copy(),
+                        crop_keypoints_xy[idx][None, :, :],
+                        keypoints_score[idx][None, :],
+                        kpt_thr=kpt_thr,
+                        skeleton_line_width=crop_line_w,
+                        keypoint_radius=crop_kpt_rad,
+                    )
+                else:
+                    crop_skeleton = crop_bgr.copy()
+                crop_skeleton_writer_worker.write(crop_skeleton)
+            else:
+                crop_writer_worker.write(black_crop)
+                crop_skeleton_writer_worker.write(black_crop)
+
+            if has_kpts:
+                annotate_pose_on_frame(
+                    frame,
+                    None,
+                    keypoints_xy[idx],
+                    keypoints_score[idx],
+                    keypoint_threshold=kpt_thr,
+                    skeleton_line_width=skel_line_w,
+                    keypoint_radius=kpt_rad,
+                )
+            _draw_frame_index_label(frame, idx, label_font_scale, label_thickness)
+            writer_worker.write(frame)
+
+            if progress_cb is not None and actual_t > 0:
+                pct = int((idx + 1) * 100 / actual_t)
+                if pct != last_reported_pct:
+                    last_reported_pct = pct
+                    progress_cb(float(pct), "LOCAL_RENDER")
+
+    except BaseException:
+        aborted = True
+        raise
+    finally:
+        try:
+            if writer_worker is not None:
+                writer_worker.close(drain=not aborted)
+        finally:
+            try:
+                if crop_writer_worker is not None:
+                    crop_writer_worker.close(drain=not aborted)
+            finally:
+                try:
+                    if crop_skeleton_writer_worker is not None:
+                        crop_skeleton_writer_worker.close(drain=not aborted)
+                finally:
+                    capture.release()
+                    for w in (writer, crop_writer, crop_skeleton_writer):
+                        if w is not None:
+                            w.release()
+        if aborted:
+            for partial in (output_video, output_crop_video, output_crop_skeleton_video):
+                try:
+                    if partial.exists():
+                        partial.unlink()
+                except OSError:
+                    pass
+
+    return {
+        "video": output_video,
+        "crop_video": output_crop_video,
+        "crop_skeleton_video": output_crop_skeleton_video,
+    }
 
 
 _CANCEL_EVENT = threading.Event()
@@ -2342,6 +2723,7 @@ def _apply_worker_config(config_path: Path) -> None:
         if cancel_file_raw
         else config_path.with_suffix(".cancel")
     )
+    raw_output_mode = raw_config.pop("__OUTPUT_MODE__", raw_config.pop("OUTPUT_MODE", None))
 
     settings = normalize_legacy_rtmlib_settings(raw_config)
     unknown = set(settings) - set(ENGINE_DEFAULTS)
@@ -2355,6 +2737,7 @@ def _apply_worker_config(config_path: Path) -> None:
         if key in PATH_SETTING_KEYS and value is not None:
             value = Path(value).expanduser()
         globals()[key] = value
+    globals()["OUTPUT_MODE"] = normalize_output_mode(raw_output_mode)
 
     if "cv2" not in globals():
         globals()["cv2"] = importlib.import_module("cv2")

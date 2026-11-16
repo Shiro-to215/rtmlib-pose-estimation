@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, Settings } from 'lucide-react';
+import { Film, Loader2, Settings } from 'lucide-react';
 import { ReservationJob } from '../../types/models';
 
 export interface QueueJobCardProps {
@@ -30,12 +30,15 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
   index,
 }) => {
   const isFailed = job.state === 'failed';
+  const isLocalRendering = Boolean(job.local_rendering);
 
   let cardBorderClass = 'border border-[#D4DFDC] bg-white hover:bg-[#F4F9F8]';
   if (isSelected) {
     cardBorderClass = 'border-2 border-[#0F766E] bg-[#E2F2EE] shadow-sm';
   } else if (isFailed) {
     cardBorderClass = 'border border-[#F5C2C0] bg-[#FEF2F2] hover:bg-[#FDF0F0]';
+  } else if (isLocalRendering) {
+    cardBorderClass = 'border border-[#99F6E4] bg-[#F0FDFA]';
   }
 
   const yoloShort = (job.summary.yolo_model || 'yolo11m.pt').replace(/^yolo11|\.pt$/g, '');
@@ -47,13 +50,19 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
 
   return (
     <div
-      draggable
-      onDragStart={(e) => onDragStart(e, job.id, index)}
+      draggable={!isLocalRendering}
+      onDragStart={(e) => {
+        if (!isLocalRendering) onDragStart(e, job.id, index);
+      }}
       onDragOver={(e) => onDragOver(e, index)}
-      onDrop={(e) => onDrop(e, index)}
+      onDrop={(e) => {
+        if (!isLocalRendering) onDrop(e, index);
+      }}
       onDragEnd={() => onDragEnd?.()}
       onClick={(e) => onSelect(e, job.id)}
-      className={`rounded-lg p-2.5 transition-all grid grid-cols-[216px_108px_1fr] items-center gap-2 cursor-pointer select-none mb-2 ${cardBorderClass}`}
+      className={`rounded-lg p-2.5 transition-all grid grid-cols-[216px_108px_1fr] items-center gap-2 ${
+        isLocalRendering ? 'cursor-default' : 'cursor-pointer'
+      } select-none mb-2 ${cardBorderClass}`}
     >
       {/* Column 0: Order Number + 160x90 Thumbnail */}
       <div className="flex items-center gap-2 pl-1">
@@ -88,18 +97,23 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
       {/* Column 1: Per-job [設定] Button */}
       <div className="flex justify-center">
         <button
+          disabled={isLocalRendering}
           onClick={(e) => {
             e.stopPropagation();
-            onOpenJobSettings(job.id);
+            if (!isLocalRendering) onOpenJobSettings(job.id);
           }}
-          className="px-4 py-2 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors shadow-xs flex items-center gap-1 cursor-pointer"
+          className={`px-4 py-2 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] bg-white transition-colors shadow-xs flex items-center gap-1 ${
+            isLocalRendering
+              ? 'opacity-45 cursor-not-allowed'
+              : 'hover:bg-[#EBF0EE] cursor-pointer'
+          }`}
         >
           <Settings className="w-3.5 h-3.5 text-[#475569]" />
           <span>設定</span>
         </button>
       </div>
 
-      {/* Column 2: Video Filename, Specs, Destination & Error Bar */}
+      {/* Column 2: Video Filename, Specs, Destination & Status/Error Bar */}
       <div className="flex flex-col justify-center min-w-0 pr-3">
         {/* Line 1: Name and Spec tag */}
         <div className="flex items-center justify-between gap-2">
@@ -116,7 +130,15 @@ export const QueueJobCard: React.FC<QueueJobCardProps> = ({
           出力先: {job.output_path}
         </div>
 
-        {/* Line 3: Failed Error & Retry (if failed) */}
+        {/* Line 3a: Local Background Video Render Badge */}
+        {isLocalRendering && (
+          <div className="mt-1.5 inline-flex items-center gap-1.5 self-start bg-[#CCFBF1] border border-[#5EEAD4] text-[#0F766E] rounded px-2.5 py-0.5 text-[11px] font-bold">
+            <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+            <span>ローカル書き出し中（3本のMP4動画を生成しています）</span>
+          </div>
+        )}
+
+        {/* Line 3b: Failed Error & Retry (if failed) */}
         {isFailed && (
           <div className="mt-1.5 flex items-center justify-between bg-white/80 border border-[#F5C2C0] rounded px-2.5 py-1">
             <span className="text-[11px] font-bold text-[#C8332B] truncate mr-2" title={job.error}>

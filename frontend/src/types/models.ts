@@ -4,6 +4,30 @@ export type PhaseCode = 'IDLE' | 'STARTING' | 'YOLO' | 'RTMPose' | 'RTMLIB' | 'V
 
 export type PoseEngineType = 'rtmpose' | 'vitpose';
 
+export type ExecutionTarget = 'local' | 'colab';
+
+export interface ColabHealthInfo {
+  status: string;
+  gpu_name?: string | null;
+  vram_free_gb?: number | null;
+  vram_total_gb?: number | null;
+  ram_total_gb?: number | null;
+  ram_available_gb?: number | null;
+  worker_ready?: boolean;
+  active_job_id?: string | null;
+  queued_count?: number;
+  capabilities?: string[];
+  latency_ms?: number;
+}
+
+export interface ColabConfig {
+  execution_target: ExecutionTarget;
+  server_url: string;
+  api_token: string;
+  remember_token: boolean;
+  last_health?: ColabHealthInfo | null;
+}
+
 export interface JobSummary {
   pose_engine?: PoseEngineType;
   pose_model: string;
@@ -53,6 +77,7 @@ export interface JobSettings {
 export interface ReservationJob {
   id: string; // 32 hex chars
   state: JobState;
+  local_rendering?: boolean;
   error: string;
   created_at: string;
   video_path: string;
@@ -77,6 +102,7 @@ export interface SystemInfo {
   choices: Record<string, string[]>;
   labels: Record<string, string>;
   groups: Array<{ title: string; keys: string[] }>;
+  colab?: ColabConfig;
 }
 
 export interface InitialDataPayload {

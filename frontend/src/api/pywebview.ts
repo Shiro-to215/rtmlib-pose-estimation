@@ -1,4 +1,6 @@
 import {
+  ColabConfig,
+  ColabHealthInfo,
   InitialDataPayload,
   JobSettings,
   ReservationJob,
@@ -445,6 +447,13 @@ class BrowserMockBackend implements BackendApi {
   private _isProcessing = false;
   private _simTimer: number | null = null;
   private _activeJobId: string | null = null;
+  private _colabConfig: ColabConfig = {
+    execution_target: 'local',
+    server_url: '',
+    api_token: '',
+    remember_token: false,
+    last_health: null,
+  };
 
   private _stripJobScopedKeys(settings: Partial<JobSettings>): Partial<JobSettings> {
     const blocked = new Set([
@@ -505,6 +514,7 @@ class BrowserMockBackend implements BackendApi {
         groups: [
           { title: '基本推論設定', keys: ['YOLO_MODEL', 'DEVICE'] },
         ],
+        colab: { ...this._colabConfig },
       },
       choices: {
         YOLO_MODEL: ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt'],
@@ -759,6 +769,50 @@ class BrowserMockBackend implements BackendApi {
       OUTPUT_METADATA_NAME: `${base}_metadata.txt`,
       OUTPUT_METADATA_JSON_NAME: `${base}_metadata.json`,
     };
+  }
+
+  async get_colab_config(): Promise<ColabConfig> {
+    return { ...this._colabConfig };
+  }
+
+  async save_colab_config(
+    config: Partial<ColabConfig>
+  ): Promise<{ status: string; config?: ColabConfig; message?: string }> {
+    if (
+      config.execution_target &&
+      config.execution_target !== this._colabConfig.execution_target &&
+      this._isProcessing
+    ) {
+      return { status: 'error', message: '解析実行中は実行先を切り替えられません。' };
+    }
+    this._colabConfig = {
+      ...this._colabConfig,
+      ...config,
+    };
+    return { status: 'ok', config: { ...this._colabConfig } };
+  }
+
+  async test_colab_connection(
+    serverUrl?: string,
+    _apiToken?: string
+  ): Promise<{ ok: boolean; health?: ColabHealthInfo; error?: string }> {
+    const target = (serverUrl || this._colabConfig.server_url || '').trim();
+    if (!target.startsWith('http://') && !target.startsWith('https://')) {
+      return { ok: false, error: '有効な URL を入力してください（https://...）' };
+    }
+    const mockHealth: ColabHealthInfo = {
+      status: 'ok',
+      gpu_name: 'Tesla T4 (Mock)',
+      vram_free_gb: 14.5,
+      vram_total_gb: 15.0,
+      ram_available_gb: 11.2,
+      ram_total_gb: 12.7,
+      worker_ready: true,
+      queued_count: 0,
+      latency_ms: 42.0,
+    };
+    this._colabConfig.last_health = mockHealth;
+    return { ok: true, health: mockHealth };
   }
 
   private _emitQueueUpdate(): void {
