@@ -7,13 +7,11 @@ export interface BackendApi {
   get_initial_data(): Promise<InitialDataPayload>;
   select_video_files(): Promise<string[]>;
   select_directory(title?: string): Promise<string | null>;
-  select_image_file(title?: string): Promise<string | null>;
   add_reservations(
     videos: string[],
     outputFolder?: string | null,
     isMulti?: boolean,
-    settings?: Partial<JobSettings>,
-    thumbnail?: string | null
+    settings?: Partial<JobSettings>
   ): Promise<ReservationJob[]>;
   remove_jobs(jobIds: string[]): Promise<ReservationJob[]>;
   move_job(jobId: string, direction: 'up' | 'down' | number): Promise<ReservationJob[]>;

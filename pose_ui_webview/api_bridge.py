@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 JOB_SCOPED_SETTING_KEYS: frozenset[str] = frozenset({
     "INPUT_ROOT",
     "INPUT_VIDEO_NAME",
-    "THUMBNAIL_ROOT",
-    "THUMBNAIL_IMAGE_NAME",
     "OUTPUT_FOLDER_NAME",
     "OUTPUT_VIDEO_NAME",
     "OUTPUT_CROP_VIDEO_NAME",
@@ -94,7 +92,7 @@ def serialize_reservation(
 
     settings = gui.normalize_legacy_rtmlib_settings(settings)
 
-    for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
+    for pk in ("INPUT_ROOT", "OUTPUT_ROOT"):
         if pk in settings:
             settings[pk] = str(settings[pk])
 
@@ -159,7 +157,7 @@ class BackendApi:
         # Engine defaults & choice specifications
         raw_defaults = engine_defaults if engine_defaults is not None else getattr(gui, "ENGINE_DEFAULTS", {})
         self.engine_defaults = deepcopy(raw_defaults)
-        for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
+        for pk in ("INPUT_ROOT", "OUTPUT_ROOT"):
             if pk in self.engine_defaults:
                 self.engine_defaults[pk] = str(self.engine_defaults[pk])
 
@@ -343,34 +341,6 @@ class BackendApi:
             logger.warning("select_directory dialog error: %s", exc)
             return ""
 
-    def select_image_file(self, title: str = "撮影日時取得用のサムネイル画像を選択") -> str | None:
-        """Opens native single image file selection dialog (e.g. SONY THMBNL)."""
-        if self._window is None:
-            return None
-        dialog_type = getattr(webview.FileDialog, "OPEN", webview.OPEN_DIALOG)
-        file_types = (
-            "Image Files (*.jpg;*.jpeg;*.png;*.thm;*.bmp)",
-            "All Files (*.*)",
-        )
-        initial_dir = (
-            self._last_video_dir
-            if (self._last_video_dir and Path(self._last_video_dir).exists())
-            else ""
-        )
-        try:
-            res = self._window.create_file_dialog(
-                dialog_type=dialog_type,
-                directory=initial_dir,
-                allow_multiple=False,
-                file_types=file_types,
-            )
-            if res and len(res) > 0:
-                return str(Path(res[0]).resolve())
-            return None
-        except Exception as exc:
-            logger.warning("select_image_file dialog error: %s", exc)
-            return None
-
     # ---- 5-8. Reservation Queue Mutation Endpoints ---------------------------
 
     def add_reservations(
@@ -379,7 +349,6 @@ class BackendApi:
         output_folder: str | None = None,
         is_multi: bool = False,
         settings: dict[str, Any] | None = None,
-        thumbnail: str | None = None,
     ) -> list[dict[str, Any]]:
         """Registers video files into the ReservationQueue and returns serialized created jobs."""
         if not videos:
@@ -403,7 +372,6 @@ class BackendApi:
                 template=template,
                 root=parent_root,
                 output_names=self._output_names_fn,
-                thumbnail=Path(thumbnail) if thumbnail else None,
                 custom_destination=custom_dest,
             )
 

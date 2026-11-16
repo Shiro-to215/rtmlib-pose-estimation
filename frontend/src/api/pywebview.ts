@@ -450,8 +450,6 @@ class BrowserMockBackend implements BackendApi {
     const blocked = new Set([
       'INPUT_ROOT',
       'INPUT_VIDEO_NAME',
-      'THUMBNAIL_ROOT',
-      'THUMBNAIL_IMAGE_NAME',
       'OUTPUT_FOLDER_NAME',
       'OUTPUT_VIDEO_NAME',
       'OUTPUT_CROP_VIDEO_NAME',
@@ -530,16 +528,11 @@ class BrowserMockBackend implements BackendApi {
     return 'C:\\Output\\CustomFolder';
   }
 
-  async select_image_file(_title?: string): Promise<string | null> {
-    return 'C:\\Videos\\thumbnail.jpg';
-  }
-
   async add_reservations(
     videos: string[],
     outputFolder?: string | null,
     _isMulti?: boolean,
-    settings?: Partial<JobSettings>,
-    _thumbnail?: string | null
+    settings?: Partial<JobSettings>
   ): Promise<ReservationJob[]> {
     const created: ReservationJob[] = videos.map((v, idx) => {
       const name = v.split('\\').pop() || v.split('/').pop() || `video_${Date.now()}_${idx}.mp4`;
@@ -623,8 +616,6 @@ class BrowserMockBackend implements BackendApi {
     const safeSettings = { ...this._stripJobScopedKeys(settings) } as Record<string, any>;
     delete safeSettings.OUTPUT_ROOT;
     delete safeSettings.OUTPUT_DIRECTORY;
-    if ('THUMBNAIL_ROOT' in settings) safeSettings.THUMBNAIL_ROOT = settings.THUMBNAIL_ROOT;
-    if ('THUMBNAIL_IMAGE_NAME' in settings) safeSettings.THUMBNAIL_IMAGE_NAME = settings.THUMBNAIL_IMAGE_NAME;
     job.settings = { ...job.settings, ...safeSettings };
     if (destination) {
       job.output_path = destination;

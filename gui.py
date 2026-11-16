@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import csv
-from datetime import datetime
 import json
 import math
 import os
@@ -45,15 +44,6 @@ INPUT_ROOT = (
     / "踏切左-SONY"
 )
 INPUT_VIDEO_NAME = "H7.MP4"
-
-# 撮影日時を取得するサムネイル画像のフォルダとファイル名を指定してください。
-THUMBNAIL_ROOT = (
-    Path.home()
-    / "解析用動画ファイル"
-    / "9-18-SMZ"
-    / "THMBNL"
-)
-THUMBNAIL_IMAGE_NAME = "H7.JPG"
 
 # GUIの初期値。解析時の出力先と名前はGUIから設定します。
 OUTPUT_ROOT = (
@@ -120,7 +110,7 @@ TARGET_BOX_FILL_MAX_FRAMES = 60
 
 
 ENGINE_SETTING_NAMES = (
-    "INPUT_ROOT", "INPUT_VIDEO_NAME", "THUMBNAIL_ROOT", "THUMBNAIL_IMAGE_NAME",
+    "INPUT_ROOT", "INPUT_VIDEO_NAME",
     "OUTPUT_ROOT", "OUTPUT_FOLDER_NAME", "OUTPUT_VIDEO_NAME", "OUTPUT_CROP_VIDEO_NAME",
     "OUTPUT_CROP_SKELETON_VIDEO_NAME", "OUTPUT_CSV_NAME", "OUTPUT_METADATA_NAME",
     "OUTPUT_METADATA_JSON_NAME", "OUTPUT_NPZ_NAME",
@@ -136,7 +126,7 @@ ENGINE_SETTING_NAMES = (
     "TARGET_SELECTION_COVERAGE_WEIGHT", "TARGET_BOX_FILL_MAX_FRAMES",
 )
 ENGINE_DEFAULTS = {key: globals()[key] for key in ENGINE_SETTING_NAMES}
-PATH_SETTING_KEYS = {"INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"}
+PATH_SETTING_KEYS = {"INPUT_ROOT", "OUTPUT_ROOT"}
 OUTPUT_NAME_KEYS = {
     "OUTPUT_VIDEO_NAME",
     "OUTPUT_CROP_VIDEO_NAME",
@@ -149,7 +139,6 @@ OUTPUT_NAME_KEYS = {
 
 DEFAULTS = {
     "INPUT_VIDEO_FILE": str(INPUT_ROOT / INPUT_VIDEO_NAME),
-    "THUMBNAIL_FILE": str(THUMBNAIL_ROOT / THUMBNAIL_IMAGE_NAME),
     "OUTPUT_DIRECTORY": str(OUTPUT_ROOT / OUTPUT_FOLDER_NAME),
 }
 DEFAULTS.update({
@@ -158,7 +147,7 @@ DEFAULTS.update({
 })
 
 GROUPS = [
-    ("入力・出力", ["INPUT_VIDEO_FILE", "THUMBNAIL_FILE", "OUTPUT_DIRECTORY", "CAPTURE_FPS"]),
+    ("入力・出力", ["INPUT_VIDEO_FILE", "OUTPUT_DIRECTORY", "CAPTURE_FPS"]),
     ("YOLO・対象人物", ["YOLO_MODEL", "YOLO_TRACKER", "YOLO_IMAGE_SIZE", "YOLO_CONFIDENCE",
                     "YOLO_IOU", "YOLO_CLASSES", "YOLO_BATCH_SIZE",
                     "TARGET_SELECTION_MIN_FRAMES", "TARGET_SELECTION_COVERAGE_WEIGHT",
@@ -173,14 +162,13 @@ GROUPS = [
                      "TRACK_PREDICTED_BOX_WEIGHT", "TRACK_PREDICTION_MAX_FRAMES"]),
 ]
 PATH_KEYS = {"OUTPUT_DIRECTORY"}
-FILE_KEYS = {"INPUT_VIDEO_FILE", "THUMBNAIL_FILE"}
+FILE_KEYS = {"INPUT_VIDEO_FILE"}
 BOOL_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, bool)}
 INT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, int) and not isinstance(value, bool)}
 FLOAT_KEYS = {key for key, value in DEFAULTS.items() if isinstance(value, float)}
 NULLABLE_FLOAT_KEYS = {"CAPTURE_FPS"}
 LABELS = {
     "INPUT_VIDEO_FILE": "入力動画",
-    "THUMBNAIL_FILE": "撮影日時用サムネイル（任意）",
     "OUTPUT_DIRECTORY": "出力先フォルダ",
     "CAPTURE_FPS": "撮影FPS（実時間基準・空欄で自動）",
     "YOLO_MODEL": "YOLOモデルサイズ",
@@ -221,6 +209,8 @@ _REMOVED_RTMLIB_SETTING_KEYS = (
     "RTMLIB_DETECTOR_SCORE_THRESHOLD",
     "RTMLIB_DETECTOR_NMS_THRESHOLD",
     "OUTPUT_YOLO_VIDEO_NAME",
+    "THUMBNAIL_ROOT",
+    "THUMBNAIL_IMAGE_NAME",
     "YOLO_TRACK_ID",
     "CROP_PADDING_RATIO",
     "TARGET_REACQUIRE_MAX_DISTANCE",
@@ -449,7 +439,6 @@ def write_video_metadata(
     height: int,
     fps: float,
     *,
-    recorded_at: str | None = None,
     metadata_total_frames: int | None = None,
     playback_fps: float | None = None,
     capture_fps: float | None = None,
@@ -459,7 +448,6 @@ def write_video_metadata(
     pose_engine_label: str | None = None,
     target_stable_id: int | None = None,
 ) -> None:
-    resolved_recorded_at = recorded_at if recorded_at is not None else get_recorded_at(input_video)
     eff_playback_fps = float(playback_fps if playback_fps is not None else fps)
     eff_capture_fps = float(capture_fps if capture_fps is not None else eff_playback_fps)
     duration_seconds = total_frames / eff_capture_fps if eff_capture_fps > 0 else 0.0
@@ -476,7 +464,6 @@ def write_video_metadata(
         "====================",
         f"元動画: {input_video.resolve()}",
         f"動画名: {input_video.name}",
-        f"動画の撮影日時: {resolved_recorded_at}",
         f"確定実フレーム数: {total_frames}",
         f"コンテナ情報フレーム数: {container_frames}",
         f"解像度（横 x 縦）: {width} x {height}",
@@ -492,79 +479,6 @@ def write_video_metadata(
     if target_stable_id is not None:
         lines.append(f"解析対象トラッキングID: {target_stable_id}")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def get_recorded_at(input_video: Path) -> str:
-    thumbnail_path = THUMBNAIL_ROOT / THUMBNAIL_IMAGE_NAME
-    metadata_source = (
-        thumbnail_path
-        if thumbnail_path.is_file()
-        else input_video
-    )
-
-    # DateTimeOriginalを優先し、記録がない場合だけCreateDateを使う。
-    for date_tag in ("DateTimeOriginal", "CreateDate"):
-        try:
-            result = subprocess.run(
-                [
-                    "exiftool",
-                    "-s3",
-                    f"-{date_tag}",
-                    str(metadata_source),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            for line in result.stdout.splitlines():
-                value = line.strip()
-                if value:
-                    return value
-        except FileNotFoundError:
-            break
-
-    # 2. ExifTool がない場合は ffprobe で全メタデータから撮影日時タグを優先検索する
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format_tags:stream_tags",
-                "-of",
-                "default=noprint_wrappers=1",
-                str(metadata_source),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        tags = {}
-        for line in result.stdout.splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                tags[k.lower()] = v.strip()
-
-        # 編集日の可能性が高い creation_time より前に、オリジナルの撮影日時タグを検索
-        priority_keys = [
-            "tag:datetimeoriginal",
-            "tag:date",
-            "tag:com.sony.mxf.datetime",
-            "tag:creation_time",
-        ]
-        for key in priority_keys:
-            if key in tags:
-                value = tags[key]
-                try:
-                    recorded_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    return recorded_at.astimezone().isoformat(sep=" ", timespec="seconds")
-                except ValueError:
-                    return value
-    except FileNotFoundError:
-        return "取得不可（ffprobe/exiftoolがインストールされていません）"
-
-    return "取得不可（動画内に撮影日時メタデータがありません）"
 
 
 def box_center(box) -> tuple[float, float]:
@@ -1799,7 +1713,6 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
     metadata_fps = metadata_capture.get(cv2.CAP_PROP_FPS) or 30.0
     metadata_capture.release()
 
-    recorded_at = get_recorded_at(input_video)
     manual_capture_fps = globals().get("CAPTURE_FPS")
     pre_capture_fps, capture_fps_source = resolve_capture_fps(
         input_video,
@@ -1814,7 +1727,6 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         metadata_width,
         metadata_height,
         metadata_fps,
-        recorded_at=recorded_at,
         metadata_total_frames=metadata_total_frames,
         playback_fps=metadata_fps,
         capture_fps=pre_capture_fps,
@@ -2273,7 +2185,6 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         "video": {
             "source_path": str(input_video.resolve()),
             "video_name": input_video.name,
-            "recorded_at": recorded_at,
             "width": int(width),
             "height": int(height),
             "actual_frame_count": int(actual_t),
@@ -2328,7 +2239,6 @@ def run_analysis(model_cache: WorkerModelCache | None = None) -> None:
         width,
         height,
         effective_playback_fps,
-        recorded_at=recorded_at,
         metadata_total_frames=metadata_total_frames,
         playback_fps=effective_playback_fps,
         capture_fps=effective_capture_fps,

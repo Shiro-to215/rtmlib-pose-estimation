@@ -11,8 +11,7 @@ export interface AddReservationViewProps {
   onSubmit: (
     videos: string[],
     outputFolder: string,
-    isMulti: boolean,
-    thumbnail?: string | null
+    isMulti: boolean
   ) => Promise<boolean>;
   onOpenBasicSettings: () => void;
 }
@@ -36,7 +35,6 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
   const [singleDest, setSingleDest] = useState<string>('');
   const [parentRoot, setParentRoot] = useState<string>(defaultOutputRoot);
   const [parentRootTouched, setParentRootTouched] = useState<boolean>(false);
-  const [thumbnailPath, setThumbnailPath] = useState<string>('');
   const [previewNames, setPreviewNames] = useState<Record<string, string>>({});
   const [customDestTouched, setCustomDestTouched] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -140,18 +138,6 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     }
   };
 
-  const handleBrowseThumbnail = async () => {
-    const api = getBackendApi();
-    try {
-      const img = await api.select_image_file('撮影日時取得用サムネイル画像を選択');
-      if (img) {
-        setThumbnailPath(img);
-      }
-    } catch (err) {
-      console.error('Error selecting image file:', err);
-    }
-  };
-
   const handleSubmit = async () => {
     if (videos.length === 0 || isSubmitting) return;
     setIsSubmitting(true);
@@ -159,8 +145,7 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     const success = await onSubmit(
       videos,
       targetFolder,
-      isMulti,
-      thumbnailPath.trim() ? thumbnailPath.trim() : null
+      isMulti
     );
     setIsSubmitting(false);
     if (!success) {
@@ -328,37 +313,6 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
                     <div>・ NPZデータ: {previewNames.OUTPUT_NPZ_NAME || '自動生成'}</div>
                     <div>・ メタデータ(TXT): {previewNames.OUTPUT_METADATA_NAME || '自動生成'}</div>
                     <div>・ メタデータ(JSON): {previewNames.OUTPUT_METADATA_JSON_NAME || '自動生成'}</div>
-                  </div>
-                </div>
-
-                {/* Optional Sony camera thumbnail picker */}
-                <div>
-                  <label className="block text-xs font-bold text-[#475569] mb-1">
-                    撮影日時取得用サムネイル画像（任意・Sony製カメラなど）
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={thumbnailPath}
-                      onChange={(e) => setThumbnailPath(e.target.value)}
-                      placeholder="任意（空欄の場合は動画ファイルから生成）"
-                      className="flex-1 h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0F766E] focus:outline-none bg-white font-mono"
-                    />
-                    <button
-                      onClick={handleBrowseThumbnail}
-                      className="px-3 h-9 text-xs font-bold bg-[#EBF0EE] hover:bg-[#E2EBE8] text-[#1E293B] border border-[#CBD5E1] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      <span>参照…</span>
-                    </button>
-                    {thumbnailPath && (
-                      <button
-                        onClick={() => setThumbnailPath('')}
-                        className="px-2.5 h-9 text-xs text-[#64748B] hover:text-[#C8332B] transition-colors cursor-pointer"
-                      >
-                        空欄にする
-                      </button>
-                    )}
                   </div>
                 </div>
               </div>

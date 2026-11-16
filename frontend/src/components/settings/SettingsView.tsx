@@ -32,8 +32,6 @@ type TabType = 'general' | 'tracking' | 'visualization';
 const JOB_SCOPED_SETTING_KEYS = new Set([
   'INPUT_ROOT',
   'INPUT_VIDEO_NAME',
-  'THUMBNAIL_ROOT',
-  'THUMBNAIL_IMAGE_NAME',
   'OUTPUT_DIRECTORY',
   'OUTPUT_ROOT',
   'OUTPUT_FOLDER_NAME',
@@ -65,16 +63,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSaveDefault,
   onSaveJob,
 }) => {
-  const initialThumbPath = React.useMemo(() => {
-    const tRoot = job?.settings?.THUMBNAIL_ROOT ? String(job.settings.THUMBNAIL_ROOT) : '';
-    const tName = job?.settings?.THUMBNAIL_IMAGE_NAME ? String(job.settings.THUMBNAIL_IMAGE_NAME) : '';
-    if (tRoot && tName) {
-      const sep = tRoot.includes('/') && !tRoot.includes('\\') ? '/' : '\\';
-      return `${tRoot.replace(/[\\/]+$/, '')}${sep}${tName}`;
-    }
-    return '';
-  }, [job]);
-
   const initialData = mode === 'job' && job ? job.settings : defaultSettings;
   const { values, setFieldValue, resetToDefaults, errors, rtmlibWarning, isDirty, isValid } =
     useSettingsForm(initialData, mode);
@@ -82,7 +70,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [defaultRoot, setDefaultRoot] = useState<string>(systemInfo.output_root || '');
   const [destination, setDestination] = useState<string>(job?.output_path || '');
-  const [thumbnail, setThumbnail] = useState<string>(initialThumbPath);
   const [resetFailed, setResetFailed] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
@@ -92,15 +79,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   React.useEffect(() => {
     setDestination(job?.output_path || '');
-    setThumbnail(initialThumbPath);
     setResetFailed(true);
-  }, [job, initialThumbPath]);
+  }, [job]);
 
   const hasIoPathChanges =
     mode === 'default'
       ? defaultRoot.trim() !== (systemInfo.output_root || '').trim()
-      : destination.trim() !== (job?.output_path || '').trim() ||
-        thumbnail.trim() !== initialThumbPath;
+      : destination.trim() !== (job?.output_path || '').trim();
 
   const canSave =
     isValid &&
@@ -165,16 +150,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     if (mode === 'default') {
       success = await onSaveDefault(extractEngineParams(values), defaultRoot);
     } else if (job) {
-      const trimmedThumb = thumbnail.trim();
       const savePayload: Partial<JobSettings> = { ...extractEngineParams(values) };
-      if (trimmedThumb) {
-        const sepIdx = Math.max(trimmedThumb.lastIndexOf('\\'), trimmedThumb.lastIndexOf('/'));
-        savePayload.THUMBNAIL_ROOT = sepIdx >= 0 ? trimmedThumb.slice(0, sepIdx) : '';
-        savePayload.THUMBNAIL_IMAGE_NAME = sepIdx >= 0 ? trimmedThumb.slice(sepIdx + 1) : trimmedThumb;
-      } else {
-        savePayload.THUMBNAIL_ROOT = '';
-        savePayload.THUMBNAIL_IMAGE_NAME = '';
-      }
       success = await onSaveJob(job.id, savePayload, resetFailed, destination);
     }
     setIsSaving(false);
@@ -256,8 +232,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               job={job}
               destination={destination}
               onChangeDestination={setDestination}
-              thumbnail={thumbnail}
-              onChangeThumbnail={setThumbnail}
               resetFailed={resetFailed}
               onChangeResetFailed={setResetFailed}
             />

@@ -7,8 +7,6 @@ export interface JobIoCardProps {
   job: ReservationJob;
   destination: string;
   onChangeDestination: (path: string) => void;
-  thumbnail: string;
-  onChangeThumbnail: (path: string) => void;
   resetFailed: boolean;
   onChangeResetFailed: (val: boolean) => void;
 }
@@ -17,8 +15,6 @@ export const JobIoCard: React.FC<JobIoCardProps> = ({
   job,
   destination,
   onChangeDestination,
-  thumbnail,
-  onChangeThumbnail,
   resetFailed,
   onChangeResetFailed,
 }) => {
@@ -44,18 +40,6 @@ export const JobIoCard: React.FC<JobIoCardProps> = ({
       }
     } catch (err) {
       console.error('Error selecting directory:', err);
-    }
-  };
-
-  const handleBrowseThumbnail = async () => {
-    const api = getBackendApi();
-    try {
-      const img = await api.select_image_file('撮影日時取得用サムネイル画像を選択');
-      if (img) {
-        onChangeThumbnail(img);
-      }
-    } catch (err) {
-      console.error('Error selecting thumbnail:', err);
     }
   };
 
@@ -102,37 +86,6 @@ export const JobIoCard: React.FC<JobIoCardProps> = ({
         <div>・ NPZデータ: {previewNames.OUTPUT_NPZ_NAME || `${job.output_folder}.npz`}</div>
         <div>・ メタデータ(TXT): {previewNames.OUTPUT_METADATA_NAME || `${job.output_folder}_metadata.txt`}</div>
         <div>・ メタデータ(JSON): {previewNames.OUTPUT_METADATA_JSON_NAME || `${job.output_folder}_metadata.json`}</div>
-      </div>
-
-      {/* Optional Thumbnail Image */}
-      <div>
-        <label className="block text-xs font-bold text-[#475569] mb-1">
-          撮影日時取得用サムネイル画像（任意）
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={thumbnail}
-            onChange={(e) => onChangeThumbnail(e.target.value)}
-            placeholder="任意（空欄の場合は動画ファイルから生成）"
-            className="flex-1 h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg bg-white text-[#1E293B] font-mono focus:border-[#0F766E] focus:outline-none"
-          />
-          <button
-            onClick={handleBrowseThumbnail}
-            className="px-3 h-9 text-xs font-bold bg-[#EBF0EE] hover:bg-[#E2EBE8] text-[#1E293B] border border-[#CBD5E1] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span>参照…</span>
-          </button>
-          {thumbnail && (
-            <button
-              onClick={() => onChangeThumbnail('')}
-              className="px-2.5 h-9 text-xs text-[#64748B] hover:text-[#C8332B] transition-colors cursor-pointer"
-            >
-              クリア
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Failed Job Reset Checkbox */}

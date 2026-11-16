@@ -213,7 +213,7 @@ class ReservationQueue:
         return job
 
     @transactional
-    def add(self, videos, template, root, output_names, thumbnail=None, custom_destination=None):
+    def add(self, videos, template, root, output_names, custom_destination=None):
         videos = [Path(video).expanduser().resolve() for video in videos]
         for video in videos:
             if not video.is_file():
@@ -221,12 +221,7 @@ class ReservationQueue:
         created = []
         for index, video in enumerate(videos):
             settings = deepcopy(template)
-            settings.update(INPUT_ROOT=str(video.parent), INPUT_VIDEO_NAME=video.name,
-                            THUMBNAIL_ROOT='', THUMBNAIL_IMAGE_NAME='')
-            if thumbnail and len(videos) == 1:
-                thumb_path = Path(thumbnail).expanduser().resolve()
-                settings['THUMBNAIL_ROOT'] = str(thumb_path.parent)
-                settings['THUMBNAIL_IMAGE_NAME'] = thumb_path.name
+            settings.update(INPUT_ROOT=str(video.parent), INPUT_VIDEO_NAME=video.name)
             if custom_destination is not None and len(videos) == 1 and index == 0:
                 dest = self.ensure_available_destination(custom_destination)
             else:

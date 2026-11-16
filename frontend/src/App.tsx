@@ -338,8 +338,7 @@ export const App: React.FC = () => {
   const handleAddReservationSubmit = async (
     videos: string[],
     outputFolder: string,
-    isMulti: boolean,
-    thumbnail?: string | null
+    isMulti: boolean
   ): Promise<boolean> => {
     const api = getBackendApi();
     setBannerError(null);
@@ -348,8 +347,7 @@ export const App: React.FC = () => {
         videos,
         outputFolder,
         isMulti,
-        defaultSettings,
-        thumbnail
+        defaultSettings
       );
       if (created && created.length > 0) {
         setActiveView('queue');

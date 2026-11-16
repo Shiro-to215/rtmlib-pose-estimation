@@ -614,7 +614,7 @@ class AnalysisWorkerManager:
                 jobs_payload.append(self._job_serializer(j))
                 continue
             settings = gui.normalize_legacy_rtmlib_settings(dict(j.settings))
-            for pk in ("INPUT_ROOT", "THUMBNAIL_ROOT", "OUTPUT_ROOT"):
+            for pk in ("INPUT_ROOT", "OUTPUT_ROOT"):
                 if pk in settings:
                     settings[pk] = str(settings[pk])
             jobs_payload.append({
