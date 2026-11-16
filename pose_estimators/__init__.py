@@ -1,5 +1,11 @@
 """Pose estimation Strategy package supporting RTMPose (ONNX) and ViTPose++ (PyTorch)."""
-from .base import BasePoseEstimator, clear_cuda_cache, clamped_target_box, draw_pose_skeleton
+from .base import (
+    BasePoseEstimator,
+    clamped_target_box,
+    clear_cuda_cache,
+    configure_onnxruntime_environment,
+    draw_pose_skeleton,
+)
 from .factory import (
     create_pose_estimator,
     resolve_pose_selection,
@@ -24,6 +30,7 @@ __all__ = [
     "clear_cuda_cache",
     "clamped_target_box",
     "configure_hf_environment",
+    "configure_onnxruntime_environment",
     "create_pose_estimator",
     "draw_pose_skeleton",
     "get_vitpose_onnx_path",

@@ -23,6 +23,7 @@ from pose_estimators import (
     clamped_target_box,
     clear_cuda_cache as _estimator_clear_cuda_cache,
     configure_hf_environment,
+    configure_onnxruntime_environment,
     create_pose_estimator as _factory_create_pose_estimator,
     draw_pose_skeleton,
     has_cached_vitpose_onnx,
@@ -1128,8 +1129,7 @@ def prepare_runtime(
         import onnxruntime as ort
 
         # PyTorchと同じCUDA/cuDNN DLLを使います（特にWindowsで必要）。
-        if hasattr(ort, "preload_dlls"):
-            ort.preload_dlls()
+        configure_onnxruntime_environment(ort, preload_cuda=True)
         if "CUDAExecutionProvider" not in ort.get_available_providers():
             reason = "ONNX RuntimeでCUDAを利用できません。onnxruntime-gpuを導入してください。"
     if reason is not None:

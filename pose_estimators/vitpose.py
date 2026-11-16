@@ -21,6 +21,7 @@ from .base import (
     bbox_xyxy2cs,
     clamped_target_box,
     clear_cuda_cache,
+    configure_onnxruntime_environment,
     draw_pose_skeleton,
     get_cuda_free_total_gb,
     top_down_affine_udp,
@@ -740,8 +741,7 @@ class ViTPoseEstimator(BasePoseEstimator):
     def _create_ort_session(self, onnx_path: Path) -> Any:
         import onnxruntime as ort
 
-        if self._is_cuda and hasattr(ort, "preload_dlls"):
-            ort.preload_dlls()
+        configure_onnxruntime_environment(ort, preload_cuda=self._is_cuda)
 
         if self._is_cuda:
             cuda_idx = int(self._device.split(":")[1]) if ":" in self._device else 0
@@ -758,7 +758,16 @@ class ViTPoseEstimator(BasePoseEstimator):
         else:
             providers = ["CPUExecutionProvider"]
 
-        session = ort.InferenceSession(str(onnx_path), providers=providers)
+        if hasattr(ort, "SessionOptions"):
+            sess_options = ort.SessionOptions()
+            sess_options.log_severity_level = 3
+            session = ort.InferenceSession(
+                str(onnx_path),
+                sess_options=sess_options,
+                providers=providers,
+            )
+        else:
+            session = ort.InferenceSession(str(onnx_path), providers=providers)
         if self._is_cuda and "CUDAExecutionProvider" not in session.get_providers():
             raise RuntimeError("ONNX Runtime で CUDAExecutionProvider を利用できません。")
         return session

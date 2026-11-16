@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import contextlib
 import gc
+import io
 from typing import Any, Optional
 
 import cv2
@@ -42,6 +44,38 @@ def clear_cuda_cache() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+def configure_onnxruntime_environment(
+    ort_mod: Any = None,
+    *,
+    preload_cuda: bool = False,
+) -> Any:
+    """Set ONNX Runtime default severity to ERROR+ and quietly preload CUDA DLLs."""
+    if ort_mod is None:
+        import onnxruntime as ort_mod
+
+    if hasattr(ort_mod, "set_default_logger_severity"):
+        try:
+            # 3 = ERROR; hides benign ORT C++ warnings such as plugin EP discovery misses.
+            ort_mod.set_default_logger_severity(3)
+        except Exception:
+            pass
+
+    if preload_cuda and hasattr(ort_mod, "preload_dlls"):
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                ort_mod.preload_dlls()
+        finally:
+            for line in buf.getvalue().splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped == "Skip loading CUDA and cuDNN DLLs since torch is imported.":
+                    continue
+                print(line, flush=True)
+    return ort_mod
 
 
 def get_cuda_free_total_gb(device: str) -> tuple[float, float] | None:

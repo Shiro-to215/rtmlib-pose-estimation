@@ -13,6 +13,7 @@ from .base import (
     BasePoseEstimator,
     bbox_xyxy2cs,
     clamped_target_box,
+    configure_onnxruntime_environment,
     draw_pose_skeleton,
     get_cuda_free_total_gb,
     top_down_affine_udp,
@@ -187,6 +188,9 @@ class RTMPoseEstimator(BasePoseEstimator):
 
     def _build_model(self) -> Any:
         from rtmlib import RTMPose
+
+        if self._backend == "onnxruntime":
+            configure_onnxruntime_environment(preload_cuda=str(self._device).startswith("cuda"))
 
         pose_asset = self._selection["pose_asset"]
         init_stdout = io.StringIO()
