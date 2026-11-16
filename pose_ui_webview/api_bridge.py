@@ -547,6 +547,11 @@ class BackendApi:
                         "status": "error",
                         "message": "Colab サーバー URL が未設定です。「Colab 接続設定」から URL とトークンを入力してください。",
                     }
+                if not str(self._colab_config.get("api_token") or "").strip():
+                    return {
+                        "status": "error",
+                        "message": "Colab の API トークンが未設定です。「Colab 接続設定」からトークンを入力してください。",
+                    }
 
             if self.worker_manager:
                 return self.worker_manager.start_queue()
@@ -612,13 +617,14 @@ class BackendApi:
                 api_token = str(self._colab_config.get("api_token") or "")
 
             url_changed = raw_url != self._colab_config.get("server_url")
+            token_changed = api_token != self._colab_config.get("api_token")
             self._colab_config = {
                 "execution_target": new_target,
                 "server_url": raw_url,
                 "api_token": api_token,
                 "remember_token": remember_token,
             }
-            if url_changed:
+            if url_changed or token_changed:
                 self._colab_last_health = None
 
             disk_payload = {
@@ -633,8 +639,13 @@ class BackendApi:
     def test_colab_connection(self, server_url: str = "", api_token: str = "") -> dict[str, Any]:
         """Tests connectivity and auth against a Google Colab FastAPI server via GET /health."""
         with self._lock:
-            target_url = str(server_url or self._colab_config.get("server_url") or "").strip()
-            target_token = str(api_token or self._colab_config.get("api_token") or "").strip()
+            saved_url = str(self._colab_config.get("server_url") or "").strip()
+            saved_token = str(self._colab_config.get("api_token") or "").strip()
+        explicit_url = str(server_url or "").strip()
+        explicit_token = str(api_token or "").strip()
+        target_url = explicit_url or saved_url
+        # Never reuse a stale stored token when the caller supplies an explicit URL or blank token.
+        target_token = explicit_token if explicit_url else (explicit_token or saved_token)
         try:
             normalized = normalize_server_url(target_url)
             client = ColabClient(normalized, target_token)

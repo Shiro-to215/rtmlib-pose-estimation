@@ -308,8 +308,11 @@ export const App: React.FC = () => {
 
   // Top Bar Actions
   const handleStartAnalysis = async () => {
-    if (colabConfig.execution_target === 'colab' && !colabConfig.server_url.trim()) {
-      setBannerError('Google Colab サーバーの URL が未設定です。接続設定から入力してください。');
+    if (
+      colabConfig.execution_target === 'colab' &&
+      (!colabConfig.server_url.trim() || !colabConfig.api_token.trim())
+    ) {
+      setBannerError('Google Colab のサーバー URL と API トークンを設定してから解析を開始してください。');
       setIsColabModalOpen(true);
       return;
     }

@@ -28,6 +28,8 @@ def normalize_server_url(server_url: str) -> str:
     parsed = urlparse(raw)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError(f"無効な URL 形式です（http:// または https:// で始めてください）: {server_url}")
+    if parsed.scheme == "http" and (parsed.hostname or "").lower().endswith(".trycloudflare.com"):
+        raw = "https://" + raw[len("http://") :]
     return raw
 
 
@@ -65,16 +67,39 @@ class ColabClient:
 
     def _headers(self) -> dict[str, str]:
         if not self.api_token:
-            return {}
+            raise ValueError("API トークンが設定されていません。Colab 接続設定からトークンを入力してください。")
         return {"Authorization": f"Bearer {self.api_token}"}
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
+    @staticmethod
+    def _raise_for_status(resp: Any) -> None:
+        status_code = getattr(resp, "status_code", 200)
+        if status_code < 400:
+            return
+        detail = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict) and payload.get("detail"):
+                detail = str(payload["detail"])
+        except Exception:
+            pass
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            if status_code in (401, 403):
+                hint = "（URL または API トークンが一致していません。Colab セル 4 の最新出力を再貼り付けして「保存して反映」を押してください）"
+                msg = f"HTTP {status_code}: {detail or exc} {hint}".strip()
+                raise requests.HTTPError(msg, response=getattr(exc, "response", resp)) from exc
+            if detail:
+                raise requests.HTTPError(f"HTTP {status_code}: {detail}", response=getattr(exc, "response", resp)) from exc
+            raise
+
     def check_health(self, timeout: float = 10.0) -> dict[str, Any]:
         started = time.perf_counter()
         resp = self._session.get(self._url("/health"), headers=self._headers(), timeout=timeout)
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         data = dict(resp.json())
         data["latency_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         return data
@@ -101,7 +126,7 @@ class ColabClient:
             json={"sha256": sha256, "filename": vpath.name, "size": size},
             timeout=20.0,
         )
-        check_resp.raise_for_status()
+        self._raise_for_status(check_resp)
         if bool(check_resp.json().get("exists")):
             if log_cb:
                 log_cb(f"Colab キャッシュヒット: 動画アップロードをスキップしました ({vpath.name})\n")
@@ -132,7 +157,7 @@ class ColabClient:
                             files={"chunk": (f"chunk_{chunk_idx}.bin", chunk_bytes, "application/octet-stream")},
                             timeout=60.0,
                         )
-                        up_resp.raise_for_status()
+                        self._raise_for_status(up_resp)
                         last_exc = None
                         break
                     except requests.RequestException as exc:
@@ -162,7 +187,7 @@ class ColabClient:
             },
             timeout=20.0,
         )
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return str(resp.json()["job_id"])
 
     def get_job_status(self, remote_job_id: str) -> dict[str, Any]:
@@ -171,7 +196,7 @@ class ColabClient:
             headers=self._headers(),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return dict(resp.json())
 
     def cancel_job(self, remote_job_id: str) -> dict[str, Any]:
@@ -180,7 +205,7 @@ class ColabClient:
             headers=self._headers(),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return dict(resp.json())
 
     def stream_job_events(
@@ -210,7 +235,7 @@ class ColabClient:
                     stream=True,
                     timeout=(10.0, 45.0),
                 )
-                resp.raise_for_status()
+                self._raise_for_status(resp)
 
                 event_data_lines: list[str] = []
                 event_id: str | None = None
@@ -314,7 +339,7 @@ class ColabClient:
                 stream=True,
                 timeout=(15.0, 120.0),
             )
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             try:
                 with zip_path.open("wb") as out_f:
                     for chunk in resp.iter_content(chunk_size=1024 * 1024):

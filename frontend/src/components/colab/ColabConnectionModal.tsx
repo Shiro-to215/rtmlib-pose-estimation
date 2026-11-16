@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle,
@@ -48,9 +48,14 @@ export const ColabConnectionModal: React.FC<ColabConnectionModalProps> = ({
     error?: string;
   } | null>(config.last_health ? { ok: true, health: config.last_health } : null);
   const [formError, setFormError] = useState<string | null>(null);
+  const wasOpenRef = useRef<boolean>(false);
 
+  // Sync local form inputs ONLY when the modal transitions from closed -> open
+  // so clicking "接続テスト" never resets unsaved edits via config.last_health updates.
   useEffect(() => {
-    if (isOpen) {
+    const justOpened = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (justOpened) {
       setExecutionTarget(config.execution_target || 'local');
       setServerUrl(config.server_url || '');
       setApiToken(config.api_token || '');
@@ -62,8 +67,19 @@ export const ColabConnectionModal: React.FC<ColabConnectionModalProps> = ({
 
   if (!isOpen) return null;
 
+  const hasUnsavedUrlOrToken =
+    serverUrl.trim() !== (config.server_url || '').trim() ||
+    apiToken.trim() !== (config.api_token || '').trim();
+
   const handleTest = async () => {
     setFormError(null);
+    if (!apiToken.trim()) {
+      setTestResult({
+        ok: false,
+        error: 'API トークンが入力されていません。Colab セル 4 に出力されたトークンを入力してください。',
+      });
+      return;
+    }
     setIsTesting(true);
     try {
       const res = await onTestConnection(serverUrl.trim(), apiToken.trim());
@@ -169,7 +185,10 @@ export const ColabConnectionModal: React.FC<ColabConnectionModalProps> = ({
             <input
               type="url"
               value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
+              onChange={(e) => {
+                setServerUrl(e.target.value);
+                setTestResult(null);
+              }}
               placeholder="https://xxxx-xxxx.trycloudflare.com"
               className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0F766E] select-text"
             />
@@ -184,7 +203,10 @@ export const ColabConnectionModal: React.FC<ColabConnectionModalProps> = ({
               <input
                 type={showToken ? 'text' : 'password'}
                 value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
+                onChange={(e) => {
+                  setApiToken(e.target.value);
+                  setTestResult(null);
+                }}
                 placeholder="ノートブックセル4に出力されたトークン"
                 className="w-full pl-3 pr-9 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0F766E] select-text"
               />
@@ -252,6 +274,11 @@ export const ColabConnectionModal: React.FC<ColabConnectionModalProps> = ({
                       {' · '}
                       ワーカー: {testResult.health.worker_ready ? '待機完了' : '初期化中'}
                     </div>
+                    {hasUnsavedUrlOrToken && (
+                      <div className="text-[11px] pl-5 font-bold text-[#0F766E]">
+                        ※ まだ保存されていません。右下の「保存して反映」を押して確定してください。
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-start gap-1.5">

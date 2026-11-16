@@ -20,3 +20,4 @@ frontend/node_modules/
 
 .agents
 TEST_READY.md
+.colab_config.json
