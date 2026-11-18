@@ -1,4 +1,6 @@
 import {
+  ColabCliPrereqs,
+  ColabCliStatus,
   ColabConfig,
   ColabHealthInfo,
   InitialDataPayload,
@@ -449,10 +451,31 @@ class BrowserMockBackend implements BackendApi {
   private _activeJobId: string | null = null;
   private _colabConfig: ColabConfig = {
     execution_target: 'local',
+    colab_mode: 'cli_ssh',
     server_url: '',
     api_token: '',
     remember_token: false,
+    cli_gpu: 'T4',
+    cli_high_mem: false,
+    cli_use_drive_cache: false,
+    cli_idle_timeout_minutes: 30,
     last_health: null,
+    cli_status: null,
+  };
+  private _cliStatus: ColabCliStatus = {
+    state: 'stopped',
+    session_name: 'rtmlib-worker',
+    gpu: 'T4',
+    high_mem: false,
+    use_drive_cache: false,
+    idle_timeout_minutes: 30,
+    idle_remaining_sec: null,
+    server_url: '',
+    last_health: null,
+    warnings: [],
+    error: null,
+    suggest_switch_to_t4: false,
+    status_message: '停止中（「解析開始」時に自動起動）',
   };
 
   private _stripJobScopedKeys(settings: Partial<JobSettings>): Partial<JobSettings> {
@@ -772,7 +795,7 @@ class BrowserMockBackend implements BackendApi {
   }
 
   async get_colab_config(): Promise<ColabConfig> {
-    return { ...this._colabConfig };
+    return { ...this._colabConfig, cli_status: { ...this._cliStatus } };
   }
 
   async save_colab_config(
@@ -785,11 +808,22 @@ class BrowserMockBackend implements BackendApi {
     ) {
       return { status: 'error', message: '解析実行中は実行先を切り替えられません。' };
     }
+    const nextGpu = config.cli_gpu || this._colabConfig.cli_gpu || 'T4';
+    const nextHighMem = nextGpu === 'L4' ? false : Boolean(config.cli_high_mem ?? this._colabConfig.cli_high_mem);
     this._colabConfig = {
       ...this._colabConfig,
       ...config,
+      cli_gpu: nextGpu,
+      cli_high_mem: nextHighMem,
     };
-    return { status: 'ok', config: { ...this._colabConfig } };
+    this._cliStatus = {
+      ...this._cliStatus,
+      gpu: nextGpu,
+      high_mem: nextHighMem,
+      use_drive_cache: Boolean(this._colabConfig.cli_use_drive_cache),
+      idle_timeout_minutes: Number(this._colabConfig.cli_idle_timeout_minutes ?? 30),
+    };
+    return { status: 'ok', config: { ...this._colabConfig, cli_status: { ...this._cliStatus } } };
   }
 
   async test_colab_connection(
@@ -813,6 +847,89 @@ class BrowserMockBackend implements BackendApi {
     };
     this._colabConfig.last_health = mockHealth;
     return { ok: true, health: mockHealth };
+  }
+
+  async get_colab_cli_status(): Promise<ColabCliStatus> {
+    return { ...this._cliStatus };
+  }
+
+  async check_colab_cli_prereqs(): Promise<ColabCliPrereqs> {
+    return {
+      ok: true,
+      colab_installed: true,
+      colab_path: 'mock-colab',
+      uv_installed: true,
+      ssh_installed: true,
+      ssh_key_exists: true,
+      ssh_key_path: '~/.ssh/id_ed25519',
+      auth_ok: true,
+      usage_summary: { balance: 100.0, usage_rate: 0.0, active_assignments: 0 },
+      error: '',
+    };
+  }
+
+  async install_colab_cli(): Promise<{ ok: boolean; message: string; prereqs: ColabCliPrereqs }> {
+    return { ok: true, message: 'Mock install complete.', prereqs: await this.check_colab_cli_prereqs() };
+  }
+
+  async generate_colab_ssh_key(): Promise<{ ok: boolean; message: string; prereqs: ColabCliPrereqs }> {
+    return { ok: true, message: 'Mock SSH key ready.', prereqs: await this.check_colab_cli_prereqs() };
+  }
+
+  async start_colab_cli_auth(): Promise<{ status: string; auth_url?: string; message?: string; prereqs?: ColabCliPrereqs }> {
+    return { status: 'already_authenticated', message: 'Already authenticated (Mock).', prereqs: await this.check_colab_cli_prereqs() };
+  }
+
+  async submit_colab_cli_auth_code(_code: string): Promise<{ ok: boolean; message: string; prereqs?: ColabCliPrereqs }> {
+    return { ok: true, message: 'Mock auth complete.', prereqs: await this.check_colab_cli_prereqs() };
+  }
+
+  async start_colab_cli(config?: Partial<ColabConfig>): Promise<{
+    ok: boolean;
+    health?: ColabHealthInfo;
+    warnings?: string[];
+    error?: string;
+    suggest_switch_to_t4?: boolean;
+    cli_status: ColabCliStatus;
+  }> {
+    if (config) await this.save_colab_config(config);
+    const gpu = this._colabConfig.cli_gpu || 'T4';
+    const mockHealth: ColabHealthInfo = {
+      status: 'ok',
+      gpu_name: `Tesla ${gpu} (SSH Mock)`,
+      vram_free_gb: 14.5,
+      vram_total_gb: 15.0,
+      ram_available_gb: 11.2,
+      ram_total_gb: 12.7,
+      worker_ready: true,
+      queued_count: 0,
+      latency_ms: 35.0,
+    };
+    this._cliStatus = {
+      ...this._cliStatus,
+      state: 'running',
+      gpu,
+      idle_remaining_sec: (this._colabConfig.cli_idle_timeout_minutes ?? 30) * 60,
+      server_url: 'http://127.0.0.1:18000',
+      last_health: mockHealth,
+      warnings: [],
+      error: null,
+      suggest_switch_to_t4: false,
+      status_message: `稼働中 (${gpu})`,
+    };
+    return { ok: true, health: mockHealth, warnings: [], cli_status: { ...this._cliStatus } };
+  }
+
+  async stop_colab_cli(): Promise<{ ok: boolean; error?: string; cli_status: ColabCliStatus }> {
+    this._cliStatus = {
+      ...this._cliStatus,
+      state: 'stopped',
+      idle_remaining_sec: null,
+      server_url: '',
+      last_health: null,
+      status_message: '停止中（「解析開始」時に自動起動）',
+    };
+    return { ok: true, cli_status: { ...this._cliStatus } };
   }
 
   private _emitQueueUpdate(): void {

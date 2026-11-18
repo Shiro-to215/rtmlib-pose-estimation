@@ -24,6 +24,11 @@ import gui
 from pose_estimators import validate_pose_settings as _validate_pose_settings
 from pose_estimators.factory import normalize_pose_engine
 from reservation_queue import Reservation, ReservationQueue, set_output, write_json
+from .colab_cli_launcher import (
+    ColabCliLauncher,
+    effective_high_mem_for_gpu,
+    normalize_gpu_choice,
+)
 from .colab_client import ColabClient, normalize_server_url
 from .worker_manager import AnalysisWorkerManager
 
@@ -176,6 +181,11 @@ class BackendApi:
         self.default_settings = self._load_default_settings()
         self._colab_config = self._load_colab_config()
         self._colab_last_health: dict[str, Any] | None = None
+        self.colab_cli_launcher = ColabCliLauncher(
+            self.base_dir,
+            is_busy_fn=lambda: self.is_processing,
+        )
+        self._sync_cli_launcher_prefs()
 
         # ReservationQueue initialization
         if reservations is not None:
@@ -196,12 +206,18 @@ class BackendApi:
                 window_provider=lambda: self._window,
                 job_serializer=self.serialize_job,
                 colab_config_provider=self.get_colab_config,
+                colab_session_preparer=self._prepare_cli_ssh_session,
+                colab_activity_callback=self.colab_cli_launcher.mark_activity,
             )
         else:
             if getattr(self.worker_manager, "_job_serializer", None) is None:
                 self.worker_manager._job_serializer = self.serialize_job
             if getattr(self.worker_manager, "_colab_config_provider", None) is None:
                 self.worker_manager._colab_config_provider = self.get_colab_config
+            if getattr(self.worker_manager, "_colab_session_preparer", None) is None:
+                self.worker_manager._colab_session_preparer = self._prepare_cli_ssh_session
+            if getattr(self.worker_manager, "_colab_activity_callback", None) is None:
+                self.worker_manager._colab_activity_callback = self.colab_cli_launcher.mark_activity
 
         # Fallback state flags if worker_manager not used directly
         self._is_processing = False
@@ -534,25 +550,76 @@ class BackendApi:
 
     # ---- 10-11. Queue Execution Control Endpoints ----------------------------
 
+    def _sync_cli_launcher_prefs(self) -> None:
+        self.colab_cli_launcher.update_preferences(
+            gpu=self._colab_config.get("cli_gpu", "T4"),
+            high_mem=bool(self._colab_config.get("cli_high_mem", False)),
+            use_drive_cache=bool(self._colab_config.get("cli_use_drive_cache", False)),
+            idle_timeout_minutes=int(self._colab_config.get("cli_idle_timeout_minutes", 30)),
+        )
+
+    def _prepare_cli_ssh_session(
+        self,
+        cfg: dict[str, Any],
+        log_cb: Callable[[str], None],
+        cancel_event: threading.Event,
+    ) -> dict[str, Any]:
+        res = self.colab_cli_launcher.ensure_started(
+            gpu=cfg.get("cli_gpu"),
+            high_mem=bool(cfg.get("cli_high_mem", False)),
+            use_drive_cache=bool(cfg.get("cli_use_drive_cache", False)),
+            idle_timeout_minutes=int(cfg.get("cli_idle_timeout_minutes", 30)),
+            log_fn=log_cb,
+            cancel_event=cancel_event,
+        )
+        with self._lock:
+            if isinstance(res.get("health"), dict):
+                self._colab_last_health = deepcopy(res["health"])
+        return {
+            **cfg,
+            "server_url": res["server_url"],
+            "api_token": res["api_token"],
+        }
+
     def start_queue_processing(self) -> dict[str, Any]:
         """Begins processing pending jobs sequentially."""
+        need_cli_prereq_check = False
         with self._lock:
             pending = self.reservations.next_pending()
             if pending is None:
                 return {"status": "empty"}
 
             if self._colab_config.get("execution_target") == "colab":
-                if not str(self._colab_config.get("server_url") or "").strip():
-                    return {
-                        "status": "error",
-                        "message": "Colab サーバー URL が未設定です。「Colab 接続設定」から URL とトークンを入力してください。",
-                    }
-                if not str(self._colab_config.get("api_token") or "").strip():
-                    return {
-                        "status": "error",
-                        "message": "Colab の API トークンが未設定です。「Colab 接続設定」からトークンを入力してください。",
-                    }
+                colab_mode = str(self._colab_config.get("colab_mode", "cli_ssh")).strip().lower()
+                if colab_mode == "manual":
+                    if not str(self._colab_config.get("server_url") or "").strip():
+                        return {
+                            "status": "error",
+                            "message": "Colab サーバー URL が未設定です。「Colab 接続設定」から URL とトークンを入力してください。",
+                        }
+                    if not str(self._colab_config.get("api_token") or "").strip():
+                        return {
+                            "status": "error",
+                            "message": "Colab の API トークンが未設定です。「Colab 接続設定」からトークンを入力してください。",
+                        }
+                else:
+                    has_mock_factory = bool(
+                        self.worker_manager
+                        and getattr(self.worker_manager, "_colab_client_factory", None) is not None
+                    )
+                    if not has_mock_factory and not self.colab_cli_launcher.is_running:
+                        need_cli_prereq_check = True
 
+        if need_cli_prereq_check:
+            prereqs = self.colab_cli_launcher.check_prereqs()
+            if not prereqs.get("ok"):
+                return {
+                    "status": "error",
+                    "code": "prereq_missing",
+                    "message": "Colab CLI の初期セットアップ（CLI導入・Google認証・SSH鍵）が未完了です。「Colab 接続設定」からセットアップを行ってください。",
+                }
+
+        with self._lock:
             if self.worker_manager:
                 return self.worker_manager.start_queue()
 
@@ -565,9 +632,14 @@ class BackendApi:
     def _load_colab_config(self) -> dict[str, Any]:
         defaults: dict[str, Any] = {
             "execution_target": "local",
+            "colab_mode": "cli_ssh",
             "server_url": "",
             "api_token": "",
             "remember_token": False,
+            "cli_gpu": "T4",
+            "cli_high_mem": False,
+            "cli_use_drive_cache": False,
+            "cli_idle_timeout_minutes": 30,
         }
         if self.colab_config_file.is_file():
             try:
@@ -575,10 +647,23 @@ class BackendApi:
                 if isinstance(data, dict):
                     target = str(data.get("execution_target", "local")).strip().lower()
                     defaults["execution_target"] = "colab" if target == "colab" else "local"
+                    raw_mode = str(data.get("colab_mode", "cli_ssh")).strip().lower()
+                    defaults["colab_mode"] = "manual" if raw_mode == "manual" else "cli_ssh"
                     defaults["server_url"] = str(data.get("server_url") or "").strip().rstrip("/")
                     defaults["remember_token"] = bool(data.get("remember_token", False))
                     if defaults["remember_token"]:
                         defaults["api_token"] = str(data.get("api_token") or "").strip()
+                    cli_gpu = normalize_gpu_choice(data.get("cli_gpu"))
+                    defaults["cli_gpu"] = cli_gpu
+                    defaults["cli_high_mem"] = effective_high_mem_for_gpu(
+                        cli_gpu, bool(data.get("cli_high_mem", False))
+                    )
+                    defaults["cli_use_drive_cache"] = bool(data.get("cli_use_drive_cache", False))
+                    try:
+                        raw_idle = int(data.get("cli_idle_timeout_minutes", 30))
+                    except (TypeError, ValueError):
+                        raw_idle = 30
+                    defaults["cli_idle_timeout_minutes"] = max(0, min(240, raw_idle))
             except Exception as exc:
                 logger.warning("Could not read Colab config from %s (%s); using defaults", self.colab_config_file, exc)
         return defaults
@@ -588,7 +673,8 @@ class BackendApi:
         with self._lock:
             cfg = deepcopy(self._colab_config)
             cfg["last_health"] = deepcopy(self._colab_last_health)
-            return cfg
+        cfg["cli_status"] = self.colab_cli_launcher.get_status()
+        return cfg
 
     def save_colab_config(self, config: dict[str, Any]) -> dict[str, Any]:
         """Validates and updates Colab execution target and connection configuration."""
@@ -603,6 +689,14 @@ class BackendApi:
             if new_target != self._colab_config.get("execution_target") and self.is_processing:
                 return {"status": "error", "message": "解析実行中は実行先を切り替えられません。"}
 
+            if "colab_mode" in config:
+                raw_mode = str(config.get("colab_mode") or "cli_ssh").strip().lower()
+                new_mode = "manual" if raw_mode == "manual" else "cli_ssh"
+            elif "server_url" in config or "api_token" in config:
+                new_mode = "manual"
+            else:
+                new_mode = str(self._colab_config.get("colab_mode", "cli_ssh"))
+
             raw_url = str(config.get("server_url", self._colab_config.get("server_url", "")) or "").strip().rstrip("/")
             if raw_url:
                 try:
@@ -616,25 +710,131 @@ class BackendApi:
             else:
                 api_token = str(self._colab_config.get("api_token") or "")
 
+            cli_gpu = normalize_gpu_choice(config.get("cli_gpu", self._colab_config.get("cli_gpu", "T4")))
+            cli_high_mem = effective_high_mem_for_gpu(
+                cli_gpu,
+                bool(config.get("cli_high_mem", self._colab_config.get("cli_high_mem", False))),
+            )
+            cli_use_drive = bool(
+                config.get("cli_use_drive_cache", self._colab_config.get("cli_use_drive_cache", False))
+            )
+            try:
+                cli_idle = int(
+                    config.get(
+                        "cli_idle_timeout_minutes",
+                        self._colab_config.get("cli_idle_timeout_minutes", 30),
+                    )
+                )
+            except (TypeError, ValueError):
+                cli_idle = 30
+            cli_idle = max(0, min(240, cli_idle))
+
             url_changed = raw_url != self._colab_config.get("server_url")
             token_changed = api_token != self._colab_config.get("api_token")
+            mode_changed = new_mode != self._colab_config.get("colab_mode")
             self._colab_config = {
                 "execution_target": new_target,
+                "colab_mode": new_mode,
                 "server_url": raw_url,
                 "api_token": api_token,
                 "remember_token": remember_token,
+                "cli_gpu": cli_gpu,
+                "cli_high_mem": cli_high_mem,
+                "cli_use_drive_cache": cli_use_drive,
+                "cli_idle_timeout_minutes": cli_idle,
             }
-            if url_changed or token_changed:
+            if url_changed or token_changed or mode_changed:
                 self._colab_last_health = None
+
+            self._sync_cli_launcher_prefs()
 
             disk_payload = {
                 "execution_target": new_target,
+                "colab_mode": new_mode,
                 "server_url": raw_url,
                 "remember_token": remember_token,
                 "api_token": api_token if remember_token else "",
+                "cli_gpu": cli_gpu,
+                "cli_high_mem": cli_high_mem,
+                "cli_use_drive_cache": cli_use_drive,
+                "cli_idle_timeout_minutes": cli_idle,
             }
             write_json(self.colab_config_file, disk_payload)
-            return {"status": "ok", "config": self.get_colab_config()}
+        return {"status": "ok", "config": self.get_colab_config()}
+
+    # ---- Colab CLI Setup & Lifecycle Endpoints -------------------------------
+
+    def get_colab_cli_status(self) -> dict[str, Any]:
+        """Returns pure in-memory Colab CLI runtime status without extending idle timer."""
+        return self.colab_cli_launcher.get_status()
+
+    def check_colab_cli_prereqs(self) -> dict[str, Any]:
+        """Checks Colab CLI, OpenSSH key, and Google auth readiness."""
+        return self.colab_cli_launcher.check_prereqs()
+
+    def install_colab_cli(self) -> dict[str, Any]:
+        """Installs google-colab-cli via uv when available."""
+        return self.colab_cli_launcher.install_cli()
+
+    def generate_colab_ssh_key(self) -> dict[str, Any]:
+        """Creates ~/.ssh/id_ed25519 non-interactively if missing."""
+        return self.colab_cli_launcher.generate_ssh_key()
+
+    def start_colab_cli_auth(self) -> dict[str, Any]:
+        """Starts interactive OAuth flow in background and returns the browser consent URL."""
+        return self.colab_cli_launcher.start_auth_flow()
+
+    def submit_colab_cli_auth_code(self, code: str) -> dict[str, Any]:
+        """Submits pasted OAuth authorization code to finish login inside GUI."""
+        return self.colab_cli_launcher.submit_auth_code(code)
+
+    def start_colab_cli(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Starts or reconnects Colab CLI runtime and SSH port-forward."""
+        if isinstance(config, dict) and config:
+            save_res = self.save_colab_config(config)
+            if save_res.get("status") != "ok":
+                return {"ok": False, "error": save_res.get("message", "設定保存に失敗しました。"), "cli_status": self.get_colab_cli_status()}
+
+        with self._lock:
+            cfg = deepcopy(self._colab_config)
+
+        try:
+            res = self.colab_cli_launcher.ensure_started(
+                gpu=cfg.get("cli_gpu"),
+                high_mem=bool(cfg.get("cli_high_mem", False)),
+                use_drive_cache=bool(cfg.get("cli_use_drive_cache", False)),
+                idle_timeout_minutes=int(cfg.get("cli_idle_timeout_minutes", 30)),
+            )
+            with self._lock:
+                if isinstance(res.get("health"), dict):
+                    self._colab_last_health = deepcopy(res["health"])
+            return {
+                "ok": True,
+                "health": res.get("health"),
+                "warnings": res.get("warnings", []),
+                "cli_status": self.get_colab_cli_status(),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "suggest_switch_to_t4": bool(getattr(exc, "suggest_switch_to_t4", False)),
+                "cli_status": self.get_colab_cli_status(),
+            }
+
+    def stop_colab_cli(self) -> dict[str, Any]:
+        """Stops local SSH tunnel and terminates active Colab runtime."""
+        if self.is_processing:
+            return {
+                "ok": False,
+                "error": "解析実行中はランタイムを停止できません。先に「解析中断」を押してください。",
+                "cli_status": self.get_colab_cli_status(),
+            }
+        status_info = self.colab_cli_launcher.stop(reason="manual")
+        with self._lock:
+            if self._colab_config.get("colab_mode") == "cli_ssh":
+                self._colab_last_health = None
+        return {"ok": True, "cli_status": status_info}
 
     def test_colab_connection(self, server_url: str = "", api_token: str = "") -> dict[str, Any]:
         """Tests connectivity and auth against a Google Colab FastAPI server via GET /health."""
@@ -946,9 +1146,11 @@ class BackendApi:
             pass
 
     def shutdown(self) -> None:
-        """Gracefully halts worker manager and thumbnail providers."""
+        """Gracefully halts worker manager, Colab CLI runtime, and thumbnail providers."""
         if self.worker_manager:
             self.worker_manager.shutdown()
+        if hasattr(self, "colab_cli_launcher") and self.colab_cli_launcher is not None:
+            self.colab_cli_launcher.shutdown()
         if self.thumbnail_provider and hasattr(self.thumbnail_provider, "stop"):
             self.thumbnail_provider.stop()
 

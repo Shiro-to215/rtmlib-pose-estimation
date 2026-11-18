@@ -1,4 +1,12 @@
-import { ColabConfig, ColabHealthInfo, InitialDataPayload, JobSettings, ReservationJob } from './models';
+import {
+  ColabCliPrereqs,
+  ColabCliStatus,
+  ColabConfig,
+  ColabHealthInfo,
+  InitialDataPayload,
+  JobSettings,
+  ReservationJob,
+} from './models';
 
 /**
  * Strongly typed interface representing the Python BackendApi endpoints exposed via PyWebView
@@ -27,7 +35,7 @@ export interface BackendApi {
     settings: Partial<JobSettings>,
     defaultRoot?: string
   ): Promise<JobSettings>;
-  start_queue_processing(): Promise<{ status: string; job_id?: string; message?: string }>;
+  start_queue_processing(): Promise<{ status: string; job_id?: string; code?: string; message?: string }>;
   cancel_current_job(): Promise<{ status: string; job_id?: string }>;
   get_job_thumbnail(jobId: string): Promise<string>;
   get_preview_frame(videoPathOrJobId: string, frameIdxOrTime?: number): Promise<string>;
@@ -45,6 +53,30 @@ export interface BackendApi {
     serverUrl?: string,
     apiToken?: string
   ): Promise<{ ok: boolean; health?: ColabHealthInfo; error?: string }>;
+  get_colab_cli_status(): Promise<ColabCliStatus>;
+  check_colab_cli_prereqs(): Promise<ColabCliPrereqs>;
+  install_colab_cli(): Promise<{ ok: boolean; message: string; prereqs: ColabCliPrereqs }>;
+  generate_colab_ssh_key(): Promise<{ ok: boolean; message: string; prereqs: ColabCliPrereqs }>;
+  start_colab_cli_auth(): Promise<{
+    status: string;
+    auth_url?: string;
+    message?: string;
+    prereqs?: ColabCliPrereqs;
+  }>;
+  submit_colab_cli_auth_code(code: string): Promise<{
+    ok: boolean;
+    message: string;
+    prereqs?: ColabCliPrereqs;
+  }>;
+  start_colab_cli(config?: Partial<ColabConfig>): Promise<{
+    ok: boolean;
+    health?: ColabHealthInfo;
+    warnings?: string[];
+    error?: string;
+    suggest_switch_to_t4?: boolean;
+    cli_status: ColabCliStatus;
+  }>;
+  stop_colab_cli(): Promise<{ ok: boolean; error?: string; cli_status: ColabCliStatus }>;
 }
 
 declare global {

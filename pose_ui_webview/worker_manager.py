@@ -38,6 +38,8 @@ class AnalysisWorkerManager:
         job_serializer: Optional[Callable[[Reservation], dict[str, Any]]] = None,
         colab_config_provider: Optional[Callable[[], dict[str, Any]]] = None,
         colab_client_factory: Optional[Callable[[str, str], Any]] = None,
+        colab_session_preparer: Optional[Callable[[dict[str, Any], Callable[[str], None], threading.Event], dict[str, Any]]] = None,
+        colab_activity_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         self.base_dir = Path(base_dir).resolve()
         self.reservations = reservations
@@ -46,6 +48,8 @@ class AnalysisWorkerManager:
         self._job_serializer = job_serializer
         self._colab_config_provider = colab_config_provider
         self._colab_client_factory = colab_client_factory
+        self._colab_session_preparer = colab_session_preparer
+        self._colab_activity_callback = colab_activity_callback
 
         # Concurrency & state controls
         self._state_lock = threading.Lock()
@@ -312,9 +316,28 @@ class AnalysisWorkerManager:
         )
         return exit_code
 
+    def _notify_colab_activity(self) -> None:
+        if callable(self._colab_activity_callback):
+            try:
+                self._colab_activity_callback()
+            except Exception:
+                pass
+
     def _run_colab_queue_loop(self, colab_cfg: dict[str, Any]) -> None:
         """Execute pending jobs via Colab GPU while prefetching uploads and parallel-rendering MP4s locally."""
+        use_cli_preparer = (
+            str(colab_cfg.get("colab_mode", "manual")).strip().lower() == "cli_ssh"
+            and callable(self._colab_session_preparer)
+            and self._colab_client_factory is None
+        )
         try:
+            if use_cli_preparer:
+                assert self._colab_session_preparer is not None
+                colab_cfg = self._colab_session_preparer(
+                    colab_cfg,
+                    lambda msg: self._push_log("", msg),
+                    self._stop_requested,
+                )
             client = self._make_colab_client(colab_cfg)
         except Exception as exc:
             self._push_log("", f"Colab 接続エラー: {exc}\n")
@@ -325,6 +348,8 @@ class AnalysisWorkerManager:
             self._push_queue_status(False, None)
             self._push_queue_update()
             return
+
+        self._notify_colab_activity()
 
         with self._state_lock:
             self._active_colab_client = client
@@ -384,6 +409,29 @@ class AnalysisWorkerManager:
                     self._push_queue_update()
                     break
 
+                if use_cli_preparer and self._colab_session_preparer is not None:
+                    try:
+                        updated_cfg = self._colab_session_preparer(
+                            colab_cfg,
+                            lambda msg, jid=job.id: self._push_log(jid, msg),
+                            self._stop_requested,
+                        )
+                        if (
+                            updated_cfg.get("server_url") != colab_cfg.get("server_url")
+                            or updated_cfg.get("api_token") != colab_cfg.get("api_token")
+                        ):
+                            colab_cfg = updated_cfg
+                            client = self._make_colab_client(colab_cfg)
+                            with self._state_lock:
+                                self._active_colab_client = client
+                    except Exception as exc:
+                        self.reservations.mark_job_failed(job.id, f"Colab トンネル復旧エラー: {exc}")
+                        self._push_log(job.id, f"Colab トンネル復旧エラー: {exc}\n")
+                        self._push_finished(job.id, -1)
+                        self._push_queue_update()
+                        break
+
+                self._notify_colab_activity()
                 self.reservations.mark_job_running(job.id, output_names=self._output_names_fn)
                 log_path = log_dir / f"{job.id}.log"
                 self._push_started(job.id, job.video.name, str(job.output))
@@ -426,12 +474,14 @@ class AnalysisWorkerManager:
 
                     with open(log_path, "w", encoding="utf-8") as log_file:
                         def _on_progress(pct: float, phase: str) -> None:
+                            self._notify_colab_activity()
                             line = f"PROGRESS:{pct}:{phase}\n"
                             log_file.write(line)
                             log_file.flush()
                             self._push_progress(job.id, pct, phase)
 
                         def _on_log(line: str) -> None:
+                            self._notify_colab_activity()
                             log_file.write(line)
                             log_file.flush()
                             job_tail.append(line)
@@ -516,6 +566,7 @@ class AnalysisWorkerManager:
                 self._active_colab_client = None
                 self._local_rendering_ids.clear()
 
+            self._notify_colab_activity()
             self._push_queue_status(False, None)
             self._push_queue_update()
             if was_stopped:

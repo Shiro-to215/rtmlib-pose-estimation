@@ -5,6 +5,8 @@ export type PhaseCode = 'IDLE' | 'STARTING' | 'YOLO' | 'RTMPose' | 'RTMLIB' | 'V
 export type PoseEngineType = 'rtmpose' | 'vitpose';
 
 export type ExecutionTarget = 'local' | 'colab';
+export type ColabMode = 'cli_ssh' | 'manual';
+export type ColabGpuType = 'T4' | 'L4' | 'A100' | 'G4' | 'H100';
 
 export interface ColabHealthInfo {
   status: string;
@@ -20,12 +22,53 @@ export interface ColabHealthInfo {
   latency_ms?: number;
 }
 
+export interface ColabCliUsageSummary {
+  balance?: number | null;
+  usage_rate?: number | null;
+  active_assignments?: number | null;
+}
+
+export interface ColabCliPrereqs {
+  ok: boolean;
+  colab_installed: boolean;
+  colab_path: string;
+  uv_installed: boolean;
+  ssh_installed: boolean;
+  ssh_key_exists: boolean;
+  ssh_key_path: string;
+  auth_ok: boolean;
+  usage_summary?: ColabCliUsageSummary | null;
+  error?: string;
+}
+
+export interface ColabCliStatus {
+  state: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+  session_name: string;
+  gpu: ColabGpuType;
+  high_mem: boolean;
+  use_drive_cache: boolean;
+  idle_timeout_minutes: number;
+  idle_remaining_sec: number | null;
+  server_url: string;
+  last_health?: ColabHealthInfo | null;
+  warnings: string[];
+  error?: string | null;
+  suggest_switch_to_t4?: boolean;
+  status_message: string;
+}
+
 export interface ColabConfig {
   execution_target: ExecutionTarget;
+  colab_mode?: ColabMode;
   server_url: string;
   api_token: string;
   remember_token: boolean;
+  cli_gpu?: ColabGpuType;
+  cli_high_mem?: boolean;
+  cli_use_drive_cache?: boolean;
+  cli_idle_timeout_minutes?: number;
   last_health?: ColabHealthInfo | null;
+  cli_status?: ColabCliStatus | null;
 }
 
 export interface JobSummary {

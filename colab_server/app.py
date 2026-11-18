@@ -7,9 +7,10 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -41,6 +42,8 @@ def create_app(
     drive_cache_dir: Path | str | None = None,
     local_cache_dir: Path | str | None = None,
     prewarm_worker: bool = True,
+    remote_idle_shutdown_sec: float | None = None,
+    on_idle_shutdown: Callable[[], None] | None = None,
 ) -> FastAPI:
     resolved_token = (
         api_token
@@ -56,8 +59,24 @@ def create_app(
     resolved_local_cache = Path(
         local_cache_dir or os.environ.get("COLAB_LOCAL_CACHE_DIR", "/content/.cache")
     )
+    if remote_idle_shutdown_sec is not None:
+        resolved_idle_sec = max(0.0, float(remote_idle_shutdown_sec))
+    else:
+        raw_idle = os.environ.get("COLAB_REMOTE_IDLE_SHUTDOWN_SEC", "").strip()
+        try:
+            resolved_idle_sec = max(0.0, float(raw_idle)) if raw_idle else 0.0
+        except ValueError:
+            resolved_idle_sec = 0.0
+
+    activity_lock = threading.Lock()
+    last_activity = [time.monotonic()]
+
+    def _touch_activity() -> None:
+        with activity_lock:
+            last_activity[0] = time.monotonic()
 
     def _on_job_finished(_record: ColabJobRecord) -> None:
+        _touch_activity()
         if resolved_drive_cache:
             threading.Thread(
                 target=sync_local_to_drive,
@@ -68,7 +87,7 @@ def create_app(
 
     host = ColabWorkerHost(
         resolved_work,
-        on_job_finished=_on_job_finished if resolved_drive_cache else None,
+        on_job_finished=_on_job_finished if resolved_drive_cache else (lambda _rec: _touch_activity()),
     )
 
     def _verify_token(authorization: str | None = Header(default=None)) -> None:
@@ -83,17 +102,54 @@ def create_app(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid API token",
             )
+        _touch_activity()
 
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI):
         app_instance.state.api_token = resolved_token
         app_instance.state.worker_host = host
+        stop_watchdog = threading.Event()
+        watchdog_thread: threading.Thread | None = None
         if prewarm_worker:
             host.start()
             await asyncio.to_thread(host._ensure_worker_ready)
+        _touch_activity()
+
+        if resolved_idle_sec > 0:
+            def _idle_watchdog_loop() -> None:
+                poll_interval = min(5.0, max(0.05, resolved_idle_sec / 4.0))
+                while not stop_watchdog.wait(poll_interval):
+                    info = host.health_info()
+                    busy = bool(info.get("active_job_id")) or int(info.get("queued_count") or 0) > 0
+                    if busy:
+                        _touch_activity()
+                        continue
+                    with activity_lock:
+                        elapsed = time.monotonic() - last_activity[0]
+                    if elapsed >= resolved_idle_sec:
+                        host.shutdown()
+                        if on_idle_shutdown is not None:
+                            on_idle_shutdown()
+                        else:
+                            timer = threading.Timer(5.0, os._exit, args=(0,))
+                            timer.daemon = True
+                            timer.start()
+                            signal.raise_signal(signal.SIGTERM)
+                        break
+
+            watchdog_thread = threading.Thread(
+                target=_idle_watchdog_loop,
+                daemon=True,
+                name="ColabRemoteIdleWatchdog",
+            )
+            watchdog_thread.start()
+
         try:
             yield
         finally:
+            stop_watchdog.set()
+            if watchdog_thread is not None and watchdog_thread.is_alive():
+                watchdog_thread.join(timeout=1.0)
             host.shutdown()
 
     app = FastAPI(title="RTMLib Pose Estimation Colab Worker", lifespan=lifespan)
@@ -177,6 +233,7 @@ def create_app(
                     host.get_events_since, job_id, cursor, wait_timeout=0.25
                 )
                 if events:
+                    _touch_activity()
                     chunks: list[str] = []
                     for ev in events:
                         seq = int(ev.get("seq", 0))
@@ -191,6 +248,7 @@ def create_app(
                     yield payload_block
                     last_heartbeat = time.monotonic()
                 elif (time.monotonic() - last_heartbeat) >= SSE_KEEPALIVE_SECONDS:
+                    _touch_activity()
                     yield f": keepalive\n{sse_flush_pad}"
                     last_heartbeat = time.monotonic()
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ColabCliStatus,
   ColabConfig,
   ColabHealthInfo,
   ExecutionTarget,
@@ -33,10 +34,16 @@ import { ColabConnectionModal } from './components/colab/ColabConnectionModal';
 
 const DEFAULT_COLAB_CONFIG: ColabConfig = {
   execution_target: 'local',
+  colab_mode: 'cli_ssh',
   server_url: '',
   api_token: '',
   remember_token: false,
+  cli_gpu: 'T4',
+  cli_high_mem: false,
+  cli_use_drive_cache: false,
+  cli_idle_timeout_minutes: 30,
   last_health: null,
+  cli_status: null,
 };
 
 export const App: React.FC = () => {
@@ -70,6 +77,35 @@ export const App: React.FC = () => {
   // Colab Remote Execution State
   const [colabConfig, setColabConfig] = useState<ColabConfig>(DEFAULT_COLAB_CONFIG);
   const [isColabModalOpen, setIsColabModalOpen] = useState<boolean>(false);
+
+  // Poll pure in-memory Colab CLI status for top-bar countdown badge (does not extend remote/local idle timer)
+  useEffect(() => {
+    const mode = colabConfig.colab_mode || 'cli_ssh';
+    if (colabConfig.execution_target !== 'colab' || mode !== 'cli_ssh') {
+      return;
+    }
+    let cancelled = false;
+    const refreshStatus = () => {
+      getBackendApi()
+        .get_colab_cli_status()
+        .then((cliStatus) => {
+          if (!cancelled && cliStatus) {
+            setColabConfig((prev) => ({
+              ...prev,
+              cli_status: cliStatus,
+              last_health: cliStatus.last_health ?? prev.last_health,
+            }));
+          }
+        })
+        .catch(() => {});
+    };
+    refreshStatus();
+    const timer = window.setInterval(refreshStatus, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [colabConfig.execution_target, colabConfig.colab_mode, isProcessing]);
 
   // Right Pane View State
   const [activeView, setActiveView] = useState<RightViewType>('queue');
@@ -270,8 +306,20 @@ export const App: React.FC = () => {
       const res = await api.save_colab_config({ execution_target: target });
       if (res && res.status === 'ok' && res.config) {
         setColabConfig({ ...DEFAULT_COLAB_CONFIG, ...res.config });
-        if (target === 'colab' && !(res.config.server_url || '').trim()) {
-          setIsColabModalOpen(true);
+        if (target === 'colab') {
+          const mode = res.config.colab_mode || 'cli_ssh';
+          if (mode === 'manual' && !(res.config.server_url || '').trim()) {
+            setIsColabModalOpen(true);
+          } else if (mode === 'cli_ssh') {
+            api
+              .check_colab_cli_prereqs()
+              .then((prereqs) => {
+                if (prereqs && !prereqs.ok) {
+                  setIsColabModalOpen(true);
+                }
+              })
+              .catch(() => {});
+          }
         }
       } else if (res?.message) {
         setBannerError(res.message);
@@ -306,10 +354,37 @@ export const App: React.FC = () => {
     return res;
   };
 
+  const handleCliStatusUpdate = (cliStatus: ColabCliStatus) => {
+    setColabConfig((prev) => ({
+      ...prev,
+      cli_status: cliStatus,
+      last_health: cliStatus.last_health ?? (cliStatus.state === 'stopped' ? null : prev.last_health),
+    }));
+  };
+
+  const handleStopColabCli = async () => {
+    if (isProcessing) return;
+    const api = getBackendApi();
+    try {
+      const res = await api.stop_colab_cli();
+      if (res?.cli_status) {
+        handleCliStatusUpdate(res.cli_status);
+      }
+      if (!res?.ok && res?.error) {
+        setBannerError(res.error);
+      }
+    } catch (err) {
+      console.error('Failed to stop Colab CLI runtime:', err);
+      setBannerError('Colab ランタイムの停止に失敗しました。');
+    }
+  };
+
   // Top Bar Actions
   const handleStartAnalysis = async () => {
+    const mode = colabConfig.colab_mode || 'cli_ssh';
     if (
       colabConfig.execution_target === 'colab' &&
+      mode === 'manual' &&
       (!colabConfig.server_url.trim() || !colabConfig.api_token.trim())
     ) {
       setBannerError('Google Colab のサーバー URL と API トークンを設定してから解析を開始してください。');
@@ -325,6 +400,9 @@ export const App: React.FC = () => {
         setIsStopping(false);
       } else if (res && res.status === 'error') {
         setBannerError(res.message || '解析の開始に失敗しました。');
+        if (res.code === 'prereq_missing') {
+          setIsColabModalOpen(true);
+        }
       }
     } catch (err) {
       console.error('Failed to start analysis queue:', err);
@@ -562,6 +640,7 @@ export const App: React.FC = () => {
       colabConfig={colabConfig}
       onChangeExecutionTarget={handleChangeExecutionTarget}
       onOpenColabModal={() => setIsColabModalOpen(true)}
+      onStopColabCli={handleStopColabCli}
       onStart={handleStartAnalysis}
       onCancel={handleCancelAnalysis}
     >
@@ -590,6 +669,7 @@ export const App: React.FC = () => {
         onClose={() => setIsColabModalOpen(false)}
         onTestConnection={handleTestColabConnection}
         onSave={handleSaveColabConfig}
+        onCliStatusChange={handleCliStatusUpdate}
       />
     </>
   );
