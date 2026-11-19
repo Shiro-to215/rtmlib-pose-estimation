@@ -24,11 +24,11 @@ export const DefaultIoCard: React.FC<DefaultIoCardProps> = ({
   };
 
   return (
-    <div className="bg-[#E4F3F0] border border-[#B5DDD6] rounded-lg p-4 mb-4 select-none">
-      <label className="block text-xs font-bold text-[#0B534D] mb-0.5">
+    <div className="bg-white rounded-[14px] p-5 select-none">
+      <label className="block text-xs font-semibold text-[#111111]">
         新規予約時の既定出力親フォルダー
       </label>
-      <p className="text-[11px] text-[#475569] mb-2.5">
+      <p className="text-[11px] text-[#71717A] mt-0.5 mb-3">
         「予約を追加」を開いたときに最初から入力される出力先の親フォルダーです（登録済みの予約には影響しません）。
       </p>
       <div className="flex gap-2">
@@ -37,13 +37,14 @@ export const DefaultIoCard: React.FC<DefaultIoCardProps> = ({
           value={defaultRoot}
           onChange={(e) => onChangeDefaultRoot(e.target.value)}
           placeholder="C:\...\動画解析出力"
-          className="flex-1 h-9 px-3 text-xs border border-[#B5DDD6] rounded-lg bg-white text-[#1E293B] font-mono focus:border-[#0F766E] focus:outline-none"
+          className="flex-1 min-w-0 h-9 px-3 text-xs font-mono rounded-[6px] bg-[#F4F5F6] border border-black/[0.08] text-[#111111] placeholder:text-[#A1A1AA] focus:bg-white focus:border-[#111111] focus:outline-none select-text"
         />
         <button
+          type="button"
           onClick={handleBrowse}
-          className="px-3.5 h-9 text-xs font-bold bg-white hover:bg-[#D0EBE6] text-[#0B534D] border border-[#B5DDD6] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+          className="h-9 px-3 text-xs font-medium bg-[#F4F5F6] hover:bg-[#E3E5E8] text-[#111111] rounded-[6px] transition-colors cursor-pointer inline-flex items-center gap-1.5 flex-shrink-0"
         >
-          <FolderOpen className="w-3.5 h-3.5" />
+          <FolderOpen className="w-3.5 h-3.5 text-[#52525B]" strokeWidth={1.6} />
           <span>参照…</span>
         </button>
       </div>

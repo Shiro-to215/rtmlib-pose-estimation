@@ -175,13 +175,13 @@ def _get_missing_dist_html() -> str:
   <title>動画姿勢推定 — ビルドが必要です</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-           background: #F2F5F4; display: flex; align-items: center; justify-content: center;
-           height: 100vh; margin: 0; color: #1E293B; }
-    .card { background: white; padding: 36px 44px; border-radius: 12px; border: 1px solid #CBD5E1;
-            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.07); max-width: 620px; }
-    h2 { color: #0F766E; margin-top: 0; }
-    code { background: #E2E8F0; padding: 3px 6px; border-radius: 4px; font-size: 13px; font-weight: 600; }
-    pre { background: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; }
+           background: #F6F7FC; display: flex; align-items: center; justify-content: center;
+           height: 100vh; margin: 0; color: #1E1B39; }
+    .card { background: white; padding: 36px 44px; border-radius: 16px; border: 1px solid #E5E3F1;
+            box-shadow: 0 10px 30px rgba(101, 31, 255, 0.06); max-width: 620px; }
+    h2 { color: #651FFF; margin-top: 0; }
+    code { background: #F3EEFF; color: #651FFF; padding: 3px 6px; border-radius: 6px; font-size: 13px; font-weight: 600; }
+    pre { background: #F8F7FC; border: 1px solid #E5E3F1; color: #1E1B39; padding: 12px; border-radius: 8px; }
   </style>
 </head>
 <body>
@@ -294,7 +294,7 @@ def launch_webview_gui(
         width=win_w,
         height=win_h,
         min_size=(1200, 675),
-        background_color="#F2F5F4",
+        background_color="#ECEEEF",
         text_select=False,
         confirm_close=False,
     )

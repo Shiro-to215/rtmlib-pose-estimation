@@ -16,10 +16,10 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
   const trackerChoices = choices.YOLO_TRACKER || ['bytetrack.yaml', 'botsort.yaml'];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 1. トラッカー・主要人物選択設定 */}
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <h4 className="text-xs font-bold text-[#1E293B] mb-2">トラッカー・主要被写体選択設定</h4>
+      <div className="bg-white rounded-[14px] p-5">
+        <h4 className="text-xs font-semibold text-[#111111] mb-2">トラッカー・主要被写体選択設定</h4>
 
         <div className="grid grid-cols-2 gap-4">
           <DropdownSelect
@@ -67,8 +67,8 @@ export const TrackingWeightsTab: React.FC<TrackingWeightsTabProps> = ({
       </div>
 
       {/* 2. トラック安定化・再関連付け設定 */}
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <h4 className="text-xs font-bold text-[#1E293B] mb-2">トラック安定化・再関連付け設定</h4>
+      <div className="bg-white rounded-[14px] p-5">
+        <h4 className="text-xs font-semibold text-[#111111] mb-2">トラック安定化・再関連付け設定</h4>
 
         <div className="grid grid-cols-2 gap-4">
           <SliderWithInput

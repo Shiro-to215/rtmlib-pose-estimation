@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ChevronLeft, FileVideo, FolderOpen, Plus, X } from 'lucide-react';
+import { FileVideo, FolderOpen, Plus, X } from 'lucide-react';
 import { JobSettings } from '../../types/models';
 import { getBackendApi } from '../../api/pywebview';
 
@@ -142,18 +142,13 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     if (videos.length === 0 || isSubmitting) return;
     setIsSubmitting(true);
     const targetFolder = isMulti ? parentRoot : singleDest;
-    const success = await onSubmit(
-      videos,
-      targetFolder,
-      isMulti
-    );
+    const success = await onSubmit(videos, targetFolder, isMulti);
     setIsSubmitting(false);
     if (!success) {
       console.error('Failed to submit reservations');
     }
   };
 
-  // Drag and drop into file list section
   const handleDropFiles = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -174,251 +169,277 @@ export const AddReservationView: React.FC<AddReservationViewProps> = ({
     }
   };
 
+  const outputPreviewRows: Array<{ label: string; value: string }> = [
+    { label: '骨格動画', value: previewNames.OUTPUT_VIDEO_NAME || '自動生成' },
+    { label: '骨格なしcrop動画', value: previewNames.OUTPUT_CROP_VIDEO_NAME || '自動生成' },
+    { label: '骨格ありcrop動画', value: previewNames.OUTPUT_CROP_SKELETON_VIDEO_NAME || '自動生成' },
+    { label: 'CSVデータ', value: previewNames.OUTPUT_CSV_NAME || '自動生成' },
+    { label: 'NPZデータ', value: previewNames.OUTPUT_NPZ_NAME || '自動生成' },
+    { label: 'メタデータ(TXT)', value: previewNames.OUTPUT_METADATA_NAME || '自動生成' },
+    { label: 'メタデータ(JSON)', value: previewNames.OUTPUT_METADATA_JSON_NAME || '自動生成' },
+  ];
+
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-white select-none">
-      {/* Header Bar */}
-      <div className="h-14 px-5 border-b border-[#D4DFDC] flex items-center gap-3 bg-[#F8FAFA] flex-shrink-0">
-        <button
-          onClick={onCancel}
-          className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
-        >
-          <ChevronLeft className="w-4 h-4" />
-          <span>予約リストへ戻る</span>
-        </button>
-        <h2 className="text-base font-bold text-[#1E293B]">予約を追加</h2>
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden select-none">
+      {/* Compact View Title Strip */}
+      <div className="pb-3 flex items-center justify-between gap-4 flex-shrink-0">
+        <div className="flex items-baseline gap-3 min-w-0">
+          <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-[#111111]">
+            予約を追加
+          </h2>
+          <span className="text-xs text-[#71717A] tabular-nums">
+            {videos.length > 0 ? `${videos.length}件の動画を選択中` : '動画と出力先を指定して待機リストへ登録'}
+          </span>
+        </div>
       </div>
 
-      {/* Main Form Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-6">
-        {/* Section 1: 入力ファイルの選択 */}
-        <section
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={handleDropFiles}
-          className="bg-white rounded-lg border border-[#D4DFDC] p-4 shadow-xs"
-        >
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <h3 className="text-sm font-bold text-[#1E293B]">1. 入力ファイルの選択</h3>
-              <p className="text-xs text-[#64748B] mt-0.5">
-                解析したい動画ファイルを選択してください（複数まとめて選択・ドロップも可能）。
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSelectVideos}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-[#E4F3F0] hover:bg-[#D0EBE6] text-[#0B534D] border border-[#B5DDD6] rounded-lg transition-colors cursor-pointer"
-              >
-                <FolderOpen className="w-3.5 h-3.5" />
-                <span>動画ファイルを選択…</span>
-              </button>
-              {videos.length > 0 && (
+      {/* Asymmetric 7 : 5 Bento Grid directly on #ECEEEF */}
+      <div className="flex-1 min-h-0 grid grid-cols-12 gap-3">
+        {/* Left Column (7 cols): Input Selection + Default Snapshot */}
+        <div className="col-span-7 min-h-0 flex flex-col gap-3">
+          {/* Card 1: 入力ファイルの選択 */}
+          <section
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDropFiles}
+            className="bg-white rounded-[14px] p-5 flex-1 min-h-0 flex flex-col"
+          >
+            <div className="flex items-start justify-between gap-3 flex-shrink-0">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-[#111111]">1. 入力ファイルの選択</h3>
+                <p className="text-xs text-[#71717A] mt-0.5">
+                  解析したい動画ファイルを選択してください（複数まとめて選択・ドロップも可能）。
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {videos.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearVideos}
+                    className="h-8 px-2.5 rounded-[6px] text-xs font-medium text-[#71717A] hover:text-[#B91C1C] hover:bg-[#FEE2E2]/60 transition-colors cursor-pointer"
+                  >
+                    選択をクリア
+                  </button>
+                )}
                 <button
-                  onClick={handleClearVideos}
-                  className="px-2.5 py-1.5 text-xs font-medium text-[#64748B] hover:text-[#C8332B] transition-colors cursor-pointer"
+                  type="button"
+                  onClick={handleSelectVideos}
+                  className="h-8 px-3 rounded-[6px] bg-[#F4F5F6] hover:bg-[#E3E5E8] text-[#111111] text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
-                  選択をクリア
+                  <FolderOpen className="w-3.5 h-3.5 text-[#52525B]" strokeWidth={1.6} />
+                  <span>動画ファイルを選択…</span>
                 </button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 mt-3 rounded-[6px] bg-[#F4F5F6] border border-black/[0.06] p-2.5 overflow-y-auto flex flex-col">
+              {videos.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center px-4 py-6 text-xs text-[#71717A]">
+                  <span className="font-medium text-[#52525B]">動画がまだ選択されていません</span>
+                  <span className="text-[11px] text-[#A1A1AA] mt-1">
+                    「動画ファイルを選択…」またはここへファイルをドラッグ＆ドロップしてください。
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {videos.map((vid, idx) => {
+                    const filename = vid.split('\\').pop() || vid.split('/').pop() || vid;
+                    const parentDir = vid.substring(0, vid.length - filename.length);
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between bg-white border border-black/[0.06] rounded-[6px] px-3 py-2 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 pr-2">
+                          <span className="font-mono text-[11px] text-[#71717A] w-5 text-right tabular-nums flex-shrink-0">
+                            {idx + 1}.
+                          </span>
+                          <FileVideo className="w-3.5 h-3.5 text-[#71717A] flex-shrink-0" strokeWidth={1.6} />
+                          <span className="font-medium text-[#111111] truncate" title={vid}>
+                            {filename}
+                          </span>
+                          <span className="text-[11px] text-[#71717A] font-mono truncate" title={parentDir}>
+                            {parentDir}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveVideo(idx)}
+                          className="p-1 rounded-[6px] text-[#71717A] hover:text-[#B91C1C] hover:bg-[#FEE2E2] transition-colors cursor-pointer flex-shrink-0"
+                          title="除外"
+                          aria-label="除外"
+                        >
+                          <X className="w-3.5 h-3.5" strokeWidth={1.6} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
-          </div>
+          </section>
 
-          {/* Video List Box */}
-          <div className="mt-3 bg-[#F8FAFA] border border-[#D4DFDC] rounded-lg p-2.5 min-h-[90px] max-h-48 overflow-y-auto">
-            {videos.length === 0 ? (
-              <div className="h-20 flex flex-col items-center justify-center text-xs text-[#94A3B8]">
-                <span>動画がまだ選択されていません。</span>
-                <span>「動画ファイルを選択…」またはドラッグ＆ドロップで追加してください。</span>
+          {/* Card 3: 適用される初期設定 */}
+          <section className="bg-white rounded-[14px] p-5 flex-shrink-0 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-[#111111]">適用される初期設定</div>
+              <div className="text-xs font-mono text-[#52525B] truncate mt-1">
+                姿勢推定:{' '}
+                {(defaultSettings.POSE_ENGINE || 'rtmpose') === 'vitpose'
+                  ? `ViTPose++-${String(defaultSettings.VITPOSE_MODEL || 'h').toUpperCase()} (${defaultSettings.VITPOSE_INPUT_SIZE || '256x192'})`
+                  : `RTMPose-${String(defaultSettings.RTMLIB_POSE_MODEL || 'x').toUpperCase()} (${defaultSettings.RTMLIB_POSE_INPUT_SIZE || '384x288'})`}{' '}
+                / YOLO11-{(defaultSettings.YOLO_MODEL || 'yolo11m.pt').replace(/^yolo11|\.pt$/g, '')} / デバイス:{' '}
+                {defaultSettings.DEVICE || 'auto'}
               </div>
-            ) : (
-              <div className="space-y-1.5">
-                {videos.map((vid, idx) => {
-                  const filename = vid.split('\\').pop() || vid.split('/').pop() || vid;
-                  const parentDir = vid.substring(0, vid.length - filename.length);
-                  return (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between bg-white border border-[#E2E8F0] rounded px-3 py-1.5 text-xs"
-                    >
-                      <div className="flex items-center gap-2 min-w-0 pr-2">
-                        <span className="font-bold text-[#64748B] w-5 text-right">{idx + 1}.</span>
-                        <FileVideo className="w-3.5 h-3.5 text-[#0F766E] flex-shrink-0" />
-                        <span className="font-bold text-[#1E293B] truncate" title={vid}>
-                          {filename}
-                        </span>
-                        <span className="text-[10px] text-[#94A3B8] truncate" title={parentDir}>
-                          ({parentDir})
-                        </span>
-                      </div>
+              <div className="text-[11px] text-[#71717A] mt-1">
+                登録後でも予約リスト各行の歯車アイコンから動画ごとに設定を変更できます。
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenBasicSettings}
+              className="h-8 px-3 rounded-[6px] bg-[#F4F5F6] hover:bg-[#E3E5E8] text-[#111111] text-xs font-medium transition-colors cursor-pointer flex-shrink-0"
+            >
+              基本設定を確認
+            </button>
+          </section>
+        </div>
+
+        {/* Right Column (5 cols): Destination Settings + Primary Actions */}
+        <div className="col-span-5 min-h-0 flex flex-col gap-3">
+          {/* Card 2: 出力先フォルダーの設定 */}
+          <section className="bg-white rounded-[14px] p-5 flex-1 min-h-0 flex flex-col">
+            <div className="flex-shrink-0">
+              <h3 className="text-sm font-semibold text-[#111111]">2. 出力先フォルダーの設定</h3>
+              <p className="text-xs text-[#71717A] mt-0.5">
+                解析結果（骨格動画・crop動画・CSV・メタデータ）の保存先を指定します。
+              </p>
+            </div>
+
+            <div className="flex-1 min-h-0 flex flex-col mt-3">
+              {!isMulti ? (
+                <>
+                  <div className="flex-shrink-0">
+                    <label className="block text-xs font-medium text-[#52525B] mb-1.5">
+                      出力先フォルダー（フォルダー名から出力ファイル名を自動生成）
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={singleDest}
+                        onChange={(e) => {
+                          setSingleDest(e.target.value);
+                          setCustomDestTouched(true);
+                        }}
+                        placeholder="C:\...\出力先フォルダー"
+                        className="flex-1 min-w-0 h-9 px-3 text-xs font-mono rounded-[6px] bg-[#F4F5F6] border border-black/[0.08] text-[#111111] placeholder:text-[#A1A1AA] focus:bg-white focus:border-[#111111] focus:outline-none select-text"
+                      />
                       <button
-                        onClick={() => handleRemoveVideo(idx)}
-                        className="text-[#C8332B] hover:bg-[#FEF2F2] p-1 rounded transition-colors cursor-pointer flex-shrink-0"
-                        title="除外"
+                        type="button"
+                        onClick={handleBrowseDestination}
+                        className="h-9 px-3 rounded-[6px] bg-[#F4F5F6] hover:bg-[#E3E5E8] text-[#111111] text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer flex-shrink-0"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <FolderOpen className="w-3.5 h-3.5 text-[#52525B]" strokeWidth={1.6} />
+                        <span>参照…</span>
                       </button>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Section 2: 出力先フォルダーの設定 */}
-        <section className="bg-white rounded-lg border border-[#D4DFDC] p-4 shadow-xs">
-          <h3 className="text-sm font-bold text-[#1E293B]">2. 出力先フォルダーの設定</h3>
-          <p className="text-xs text-[#64748B] mt-0.5">
-            解析結果（骨格動画・crop動画2本・CSV・メタデータ）の保存先を指定します。
-          </p>
-
-          <div className="mt-3">
-            {!isMulti ? (
-              /* Single Video Mode */
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#475569] mb-1">
-                    出力先フォルダー（フォルダー名から出力ファイル名を自動生成します）
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={singleDest}
-                      onChange={(e) => {
-                        setSingleDest(e.target.value);
-                        setCustomDestTouched(true);
-                      }}
-                      placeholder="C:\...\出力先フォルダー"
-                      className="flex-1 h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0F766E] focus:outline-none bg-white font-mono"
-                    />
-                    <button
-                      onClick={handleBrowseDestination}
-                      className="px-3.5 h-9 text-xs font-bold bg-[#EBF0EE] hover:bg-[#E2EBE8] text-[#1E293B] border border-[#CBD5E1] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      <span>参照…</span>
-                    </button>
                   </div>
-                </div>
 
-                {/* Auto-generated names preview */}
-                <div className="bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg p-2.5 text-xs text-[#0F766E]">
-                  <span className="font-bold text-[#475569] block mb-1">
-                    自動生成される出力ファイル:
-                  </span>
-                  <div className="font-mono text-[11px] space-y-0.5">
-                    <div>・ 骨格動画: {previewNames.OUTPUT_VIDEO_NAME || '自動生成'}</div>
-                    <div>・ 骨格なしcrop動画: {previewNames.OUTPUT_CROP_VIDEO_NAME || '自動生成'}</div>
-                    <div>・ 骨格ありcrop動画: {previewNames.OUTPUT_CROP_SKELETON_VIDEO_NAME || '自動生成'}</div>
-                    <div>・ CSVデータ: {previewNames.OUTPUT_CSV_NAME || '自動生成'}</div>
-                    <div>・ NPZデータ: {previewNames.OUTPUT_NPZ_NAME || '自動生成'}</div>
-                    <div>・ メタデータ(TXT): {previewNames.OUTPUT_METADATA_NAME || '自動生成'}</div>
-                    <div>・ メタデータ(JSON): {previewNames.OUTPUT_METADATA_JSON_NAME || '自動生成'}</div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              /* Multi Video Mode */
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#475569] mb-1">
-                    出力親フォルダー（この中に動画ごとのサブフォルダーを自動作成します）
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={parentRoot}
-                      onChange={(e) => {
-                        setParentRoot(e.target.value);
-                        setParentRootTouched(true);
-                      }}
-                      placeholder="出力親フォルダーのパス"
-                      className="flex-1 h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0F766E] focus:outline-none bg-white font-mono"
-                    />
-                    <button
-                      onClick={handleBrowseDestination}
-                      className="px-3.5 h-9 text-xs font-bold bg-[#EBF0EE] hover:bg-[#E2EBE8] text-[#1E293B] border border-[#CBD5E1] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      <span>参照…</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Subfolder list preview */}
-                <div className="bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg p-2.5 text-xs">
-                  <span className="font-bold text-[#475569] block mb-1">
-                    作成されるサブフォルダー（最大5件表示）:
-                  </span>
-                  <div className="font-mono text-[11px] text-[#0F766E] space-y-0.5">
-                    {videos.slice(0, 5).map((v, i) => {
-                      const name = v.split('\\').pop() || v.split('/').pop() || '';
-                      const stem = name.replace(/\.[^/.]+$/, '');
-                      return (
-                        <div key={i} className="truncate">
-                          ・ {name} → {joinOutputPath(parentRoot, stem)}
+                  <div className="flex-1 min-h-0 mt-3 rounded-[6px] bg-[#F4F5F6] border border-black/[0.06] p-3.5 overflow-y-auto">
+                    <div className="text-xs font-medium text-[#111111] mb-2">
+                      自動生成される出力ファイル
+                    </div>
+                    <div className="space-y-1.5 font-mono text-[11px]">
+                      {outputPreviewRows.map((row) => (
+                        <div key={row.label} className="flex items-center justify-between gap-2 min-w-0">
+                          <span className="text-[#71717A] font-sans flex-shrink-0">{row.label}</span>
+                          <span className="text-[#52525B] truncate" title={row.value}>
+                            {row.value}
+                          </span>
                         </div>
-                      );
-                    })}
-                    {videos.length > 5 && (
-                      <div className="text-[#94A3B8] italic pt-0.5">
-                        … ほか {videos.length - 5} 件（重複時は自動で連番が付きます）
-                      </div>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
+                </>
+              ) : (
+                <>
+                  <div className="flex-shrink-0">
+                    <label className="block text-xs font-medium text-[#52525B] mb-1.5">
+                      出力親フォルダー（動画ごとのサブフォルダーを自動作成）
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={parentRoot}
+                        onChange={(e) => {
+                          setParentRoot(e.target.value);
+                          setParentRootTouched(true);
+                        }}
+                        placeholder="出力親フォルダーのパス"
+                        className="flex-1 min-w-0 h-9 px-3 text-xs font-mono rounded-[6px] bg-[#F4F5F6] border border-black/[0.08] text-[#111111] placeholder:text-[#A1A1AA] focus:bg-white focus:border-[#111111] focus:outline-none select-text"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleBrowseDestination}
+                        className="h-9 px-3 rounded-[6px] bg-[#F4F5F6] hover:bg-[#E3E5E8] text-[#111111] text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer flex-shrink-0"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-[#52525B]" strokeWidth={1.6} />
+                        <span>参照…</span>
+                      </button>
+                    </div>
+                  </div>
 
-        {/* Section 3: 設定スナップショット情報 */}
-        <section className="bg-[#EBF0EE] border border-[#D4DFDC] rounded-lg p-4 flex items-center justify-between">
-          <div className="text-xs text-[#1E293B]">
-            <div className="font-bold text-[#0B534D] mb-0.5">適用される初期設定:</div>
-            <div className="font-mono text-[#475569]">
-              姿勢推定=
-              {(defaultSettings.POSE_ENGINE || 'rtmpose') === 'vitpose'
-                ? `ViTPose++-${String(defaultSettings.VITPOSE_MODEL || 'h').toUpperCase()} (${defaultSettings.VITPOSE_INPUT_SIZE || '256x192'})`
-                : `RTMPose-${defaultSettings.RTMLIB_POSE_MODEL || 'x'} (${defaultSettings.RTMLIB_POSE_INPUT_SIZE || '384x288'})`}{' '}
-              / YOLO=
-              {(defaultSettings.YOLO_MODEL || 'yolo11m.pt').replace(/^yolo11|\.pt$/g, '')} / デバイス=
-              {defaultSettings.DEVICE || 'auto'}
+                  <div className="flex-1 min-h-0 mt-3 rounded-[6px] bg-[#F4F5F6] border border-black/[0.06] p-3.5 overflow-y-auto">
+                    <div className="text-xs font-medium text-[#111111] mb-2">
+                      作成されるサブフォルダー（最大5件表示）
+                    </div>
+                    <div className="space-y-1.5 font-mono text-[11px] text-[#52525B]">
+                      {videos.slice(0, 5).map((v, i) => {
+                        const name = v.split('\\').pop() || v.split('/').pop() || '';
+                        const stem = name.replace(/\.[^/.]+$/, '');
+                        return (
+                          <div key={i} className="truncate" title={joinOutputPath(parentRoot, stem)}>
+                            <span className="text-[#71717A]">{name}</span> → {joinOutputPath(parentRoot, stem)}
+                          </div>
+                        );
+                      })}
+                      {videos.length > 5 && (
+                        <div className="text-[#71717A] pt-1 font-sans">
+                          ほか {videos.length - 5} 件（重複時は自動で連番が付きます）
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-            <div className="text-[10px] text-[#64748B] mt-1">
-              ※ リストへ追加したあとでも、各行の「設定」ボタンから動画ごとに変更できます。
-            </div>
+          </section>
+
+          {/* Bottom-Right Action Row */}
+          <div className="flex items-center justify-end gap-2.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isSubmitting}
+              className="h-9 px-4 rounded-[6px] text-xs font-medium text-[#52525B] hover:text-[#111111] hover:bg-black/[0.05] transition-colors cursor-pointer"
+            >
+              キャンセル
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={videos.length === 0 || isSubmitting}
+              className={`h-9 px-5 rounded-[6px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
+                videos.length > 0 && !isSubmitting
+                  ? 'bg-[#111111] hover:bg-[#27272A] text-white cursor-pointer'
+                  : 'bg-[#D9DCE0] text-[#8E8E98] cursor-not-allowed'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5" strokeWidth={1.8} />
+              <span>{isSubmitting ? '登録中...' : '予約リストに追加する'}</span>
+            </button>
           </div>
-          <button
-            onClick={onOpenBasicSettings}
-            className="px-3.5 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-white bg-white/70 transition-colors cursor-pointer flex-shrink-0"
-          >
-            基本設定を確認
-          </button>
-        </section>
-      </div>
-
-      {/* Footer Action Bar */}
-      <div className="h-16 px-6 bg-[#F8FAFA] border-t border-[#D4DFDC] flex items-center justify-between flex-shrink-0">
-        <button
-          onClick={onCancel}
-          disabled={isSubmitting}
-          className="px-5 h-10 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
-        >
-          キャンセル
-        </button>
-
-        <button
-          onClick={handleSubmit}
-          disabled={videos.length === 0 || isSubmitting}
-          className={`flex items-center gap-2 px-6 h-10 rounded-lg font-bold text-sm transition-all ${
-            videos.length > 0 && !isSubmitting
-              ? 'bg-[#0F766E] hover:bg-[#115E59] active:bg-[#0B534D] text-white shadow-sm cursor-pointer'
-              : 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed shadow-none'
-          }`}
-        >
-          <Plus className="w-4 h-4" />
-          <span>{isSubmitting ? '登録中...' : '予約リストに追加する'}</span>
-        </button>
+        </div>
       </div>
     </div>
   );

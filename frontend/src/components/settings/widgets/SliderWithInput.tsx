@@ -62,7 +62,7 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
   return (
     <div className={`py-2 ${className}`}>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs font-bold text-[#1E293B]">{label}</label>
+        <label className="text-xs font-semibold text-[#111111]">{label}</label>
         <div className="flex items-center gap-1">
           <input
             type="number"
@@ -73,12 +73,12 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
             onChange={handleInputChange}
             onFocus={() => setFocused(true)}
             onBlur={handleBlur}
-            className="w-20 px-2 py-0.5 text-xs text-right font-mono border border-[#CBD5E1] rounded focus:border-[#0F766E] focus:outline-none bg-white text-[#1E293B]"
+            className="w-20 px-2 py-0.5 text-xs text-right font-mono tabular-nums rounded-[6px] bg-[#F4F5F6] border border-black/[0.08] text-[#111111] font-semibold focus:bg-white focus:border-[#111111] focus:outline-none select-text"
           />
-          {unit && <span className="text-[11px] text-[#64748B] w-6">{unit}</span>}
+          {unit && <span className="text-[11px] text-[#71717A] w-6">{unit}</span>}
         </div>
       </div>
-      {description && <p className="text-[11px] text-[#64748B] mb-1.5">{description}</p>}
+      {description && <p className="text-[11px] text-[#71717A] mb-1.5 leading-snug">{description}</p>}
       <div className="flex items-center gap-3">
         <input
           type="range"
@@ -87,10 +87,10 @@ export const SliderWithInput: React.FC<SliderWithInputProps> = ({
           step={step}
           value={sliderVal}
           onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="flex-1 h-1.5 bg-[#E2E8F0] rounded-lg appearance-none cursor-pointer accent-[#0F766E]"
+          className="flex-1 studio-range cursor-pointer"
         />
       </div>
-      {error && <p className="text-[11px] text-[#C8332B] mt-1">{error}</p>}
+      {error && <p className="text-[11px] text-[#B91C1C] mt-1">{error}</p>}
     </div>
   );
 };

@@ -44,4 +44,9 @@ declare module 'lucide-react' {
   export const Link2: LucideIcon;
   export const Loader2: LucideIcon;
   export const Sparkles: LucideIcon;
+  export const Activity: LucideIcon;
+  export const Terminal: LucideIcon;
+  export const GripVertical: LucideIcon;
+  export const Layers: LucideIcon;
+  export const PlusCircle: LucideIcon;
 }

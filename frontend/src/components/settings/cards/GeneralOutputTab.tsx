@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, Cpu, Sparkles } from 'lucide-react';
+import { AlertTriangle, Check, Cpu, Layers } from 'lucide-react';
 import { DropdownSelect } from '../widgets/DropdownSelect';
 import { SliderWithInput } from '../widgets/SliderWithInput';
 import { TagListInput } from '../widgets/TagListInput';
@@ -49,70 +49,89 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
   }));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Pose Model Compatibility Warning Banner */}
       {rtmlibWarning && (
-        <div className="flex items-center gap-2 p-3 bg-[#FEF2F2] border border-[#F5C2C0] rounded-lg text-xs text-[#C8332B] font-medium">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0 text-[#C8332B]" />
+        <div className="flex items-center gap-2 p-3 bg-[#FEE2E2] rounded-[6px] text-xs text-[#B91C1C] font-medium">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 text-[#B91C1C]" strokeWidth={1.6} />
           <span>{rtmlibWarning}</span>
         </div>
       )}
 
       {/* 姿勢推定エンジン切り替え */}
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h4 className="text-xs font-bold text-[#1E293B]">姿勢推定エンジン</h4>
-            <p className="text-[11px] text-[#64748B]">
-              ジョブで使用する骨格推定エンジンを選択します（非選択側の設定も保持されます）
-            </p>
-          </div>
+      <div className="bg-white rounded-[14px] p-5">
+        <div className="mb-3">
+          <h4 className="text-xs font-semibold text-[#111111]">姿勢推定エンジン</h4>
+          <p className="text-[11px] text-[#71717A] mt-0.5">
+            ジョブで使用する骨格推定エンジンを選択します（非選択側の設定も保持されます）
+          </p>
         </div>
-        <div className="grid grid-cols-2 gap-2.5">
+
+        <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
             onClick={() => setFieldValue('POSE_ENGINE', 'rtmpose')}
-            className={`flex items-start gap-2.5 p-3 rounded-lg border text-left transition-all cursor-pointer ${
+            className={`p-3.5 rounded-[6px] text-left transition-colors cursor-pointer flex items-start justify-between gap-3 ${
               poseEngine === 'rtmpose'
-                ? 'border-[#0369A1] bg-[#F0F9FF] ring-1 ring-[#0369A1]'
-                : 'border-[#D4DFDC] bg-white hover:bg-[#F8FAFA]'
+                ? 'border-[1.5px] border-[#111111] bg-[#F4F5F6]'
+                : 'border border-black/[0.08] bg-white hover:bg-[#F4F5F6]/60'
             }`}
           >
-            <Cpu className={`w-4 h-4 mt-0.5 flex-shrink-0 ${poseEngine === 'rtmpose' ? 'text-[#0369A1]' : 'text-[#64748B]'}`} />
-            <div>
-              <div className={`text-xs font-bold ${poseEngine === 'rtmpose' ? 'text-[#0369A1]' : 'text-[#1E293B]'}`}>
-                RTMPose（高速・省メモリ / ONNX）
-              </div>
-              <div className="text-[11px] text-[#64748B] mt-0.5">
-                軽量で高速。動作確認や長尺動画の迅速な処理に最適
+            <div className="flex items-start gap-2.5 min-w-0">
+              <Cpu
+                className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
+                  poseEngine === 'rtmpose' ? 'text-[#111111]' : 'text-[#71717A]'
+                }`}
+                strokeWidth={1.6}
+              />
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-[#111111]">
+                  RTMPose（高速・省メモリ / ONNX）
+                </div>
+                <div className="text-[11px] text-[#71717A] mt-0.5 leading-snug">
+                  軽量で高速。動作確認や長尺動画の迅速な処理に最適
+                </div>
               </div>
             </div>
+            {poseEngine === 'rtmpose' && (
+              <Check className="w-4 h-4 text-[#111111] flex-shrink-0 mt-0.5" strokeWidth={2} />
+            )}
           </button>
 
           <button
             type="button"
             onClick={() => setFieldValue('POSE_ENGINE', 'vitpose')}
-            className={`flex items-start gap-2.5 p-3 rounded-lg border text-left transition-all cursor-pointer ${
+            className={`p-3.5 rounded-[6px] text-left transition-colors cursor-pointer flex items-start justify-between gap-3 ${
               poseEngine === 'vitpose'
-                ? 'border-[#7C3AED] bg-[#F5F3FF] ring-1 ring-[#7C3AED]'
-                : 'border-[#D4DFDC] bg-white hover:bg-[#F8FAFA]'
+                ? 'border-[1.5px] border-[#111111] bg-[#F4F5F6]'
+                : 'border border-black/[0.08] bg-white hover:bg-[#F4F5F6]/60'
             }`}
           >
-            <Sparkles className={`w-4 h-4 mt-0.5 flex-shrink-0 ${poseEngine === 'vitpose' ? 'text-[#7C3AED]' : 'text-[#64748B]'}`} />
-            <div>
-              <div className={`text-xs font-bold ${poseEngine === 'vitpose' ? 'text-[#7C3AED]' : 'text-[#1E293B]'}`}>
-                ViTPose++（研究用・最高精度 / PyTorch）
-              </div>
-              <div className="text-[11px] text-[#64748B] mt-0.5">
-                Classic デコーダ・UDP後処理・FP16・Flip Test 対応の高精度パイプライン
+            <div className="flex items-start gap-2.5 min-w-0">
+              <Layers
+                className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
+                  poseEngine === 'vitpose' ? 'text-[#111111]' : 'text-[#71717A]'
+                }`}
+                strokeWidth={1.6}
+              />
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-[#111111]">
+                  ViTPose++（研究用・最高精度 / PyTorch）
+                </div>
+                <div className="text-[11px] text-[#71717A] mt-0.5 leading-snug">
+                  Classic デコーダ・UDP後処理・FP16・Flip Test 対応の高精度パイプライン
+                </div>
               </div>
             </div>
+            {poseEngine === 'vitpose' && (
+              <Check className="w-4 h-4 text-[#111111] flex-shrink-0 mt-0.5" strokeWidth={2} />
+            )}
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        {/* DEVICE */}
+      {/* デバイス・FPS設定 */}
+      <div className="grid grid-cols-2 gap-4 bg-white rounded-[14px] p-5">
         <DropdownSelect
           label="推論実行デバイス"
           description="YOLOおよび姿勢推定モデルを実行するハードウェア（auto: 自動判定, cuda: GPU, cpu: CPU）"
@@ -121,7 +140,6 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           onChange={(v) => setFieldValue('DEVICE', v)}
         />
 
-        {/* CAPTURE_FPS */}
         <NullableNumberInput
           label="元動画の撮影フレームレート (FPS)"
           description="スローモーション再生動画などの実際の撮影fps（例: 240, 119.88）。空欄時はメタデータまたは動画再生FPSから自動取得"
@@ -136,8 +154,8 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
       </div>
 
       {/* Group: YOLO 検出・しきい値設定 */}
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <h4 className="text-xs font-bold text-[#0F766E] mb-2">YOLO 検出・しきい値設定</h4>
+      <div className="bg-white rounded-[14px] p-5">
+        <h4 className="text-xs font-semibold text-[#111111] mb-2">YOLO 検出・しきい値設定</h4>
 
         <div className="grid grid-cols-2 gap-4">
           <DropdownSelect
@@ -210,8 +228,10 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
 
       {/* 選択中の推論エンジン専用設定 */}
       {poseEngine === 'rtmpose' ? (
-        <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-          <h4 className="text-xs font-bold text-[#0369A1] mb-2">RTMPose 骨格推定設定（ONNX / OpenCV）</h4>
+        <div className="bg-white rounded-[14px] p-5">
+          <h4 className="text-xs font-semibold text-[#111111] mb-2">
+            RTMPose 骨格推定設定（ONNX / OpenCV）
+          </h4>
 
           <div className="grid grid-cols-3 gap-3">
             <DropdownSelect
@@ -264,10 +284,12 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
           </div>
         </div>
       ) : (
-        <div className="border border-[#DDD6FE] rounded-lg p-3.5 bg-white">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-xs font-bold text-[#7C3AED]">ViTPose++ 骨格推定設定（ONNX Runtime / PyTorch）</h4>
-            <span className="text-[11px] font-mono font-bold text-[#6D28D9] bg-[#F5F3FF] border border-[#DDD6FE] px-2 py-0.5 rounded">
+        <div className="bg-white rounded-[14px] p-5">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <h4 className="text-xs font-semibold text-[#111111]">
+              ViTPose++ 骨格推定設定（ONNX Runtime / PyTorch）
+            </h4>
+            <span className="text-[11px] font-mono text-[#52525B] bg-[#F4F5F6] px-2.5 py-0.5 rounded-[6px]">
               解像度: 256×192 (4:3 標準固定) / UDP デコーダ
             </span>
           </div>
@@ -324,8 +346,8 @@ export const GeneralOutputTab: React.FC<GeneralOutputTabProps> = ({
             />
           </div>
 
-          <div className="mt-3 p-2.5 rounded-md bg-[#F5F3FF] border border-[#EDE9FE] text-[11px] text-[#5B21B6] leading-relaxed">
-            <strong>内部最適化仕様（固定）:</strong> Pass 1（YOLO）の VRAM 解放後に ONNX Runtime（不可時は PyTorch）で推論を実行し、CUDA時は指定精度（FP16/FP32）、UDP サブピクセル座標算出は FP32 で行ってジッターを抑制します。
+          <div className="mt-3 p-3 rounded-[6px] bg-[#F4F5F6] border border-black/[0.06] text-[11px] text-[#52525B] leading-relaxed">
+            <strong className="text-[#111111] font-semibold">内部最適化仕様（固定）:</strong> Pass 1（YOLO）の VRAM 解放後に ONNX Runtime（不可時は PyTorch）で推論を実行し、CUDA時は指定精度（FP16/FP32）、UDP サブピクセル座標算出は FP32 で行ってジッターを抑制します。
           </div>
         </div>
       )}

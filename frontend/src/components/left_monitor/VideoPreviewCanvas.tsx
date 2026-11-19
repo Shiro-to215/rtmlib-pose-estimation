@@ -1,5 +1,4 @@
 import React from 'react';
-import { Film } from 'lucide-react';
 
 export interface VideoPreviewCanvasProps {
   imageSrc?: string;
@@ -18,65 +17,57 @@ function ellipsize(text: string, limit: number): string {
 export const VideoPreviewCanvas: React.FC<VideoPreviewCanvasProps> = ({
   imageSrc,
   videoTitle = '待機中',
-  metaText = '右側の予約リストから解析を開始できます',
+  metaText = '',
   resolutionInfo,
   isIdle = true,
 }) => {
   const displayTitle = isIdle ? '待機中' : ellipsize(videoTitle, 28);
-  const displayMeta = isIdle
-    ? metaText
-    : resolutionInfo
-    ? `${resolutionInfo}  |  ${ellipsize(metaText, 38)}`
-    : ellipsize(metaText, 38);
+  const displayMeta = isIdle ? 'キュー開始でフレーム表示' : metaText;
 
   return (
-    <div className="flex flex-col w-full">
-      {/* 16:9 Letterbox Frame */}
-      <div className="relative w-full aspect-video bg-[#E2E8E6] rounded-lg border border-[#D4DFDC] overflow-hidden flex items-center justify-center shadow-inner">
+    <section className="bg-white rounded-[14px] p-4 flex flex-col gap-2.5 flex-shrink-0">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs font-medium text-[#71717A]">解析中プレビュー</h2>
+        <span className="text-[11px] font-mono text-[#71717A] tabular-nums">
+          {!isIdle && resolutionInfo ? resolutionInfo : '16:9'}
+        </span>
+      </div>
+
+      {/* Flexible 16:9 Viewport (CSS hairline grid when idle, zero decorative SVG) */}
+      <div className="w-full aspect-video rounded-[6px] overflow-hidden relative flex items-center justify-center">
         {imageSrc ? (
-          <>
-            <img
-              src={imageSrc}
-              alt={videoTitle}
-              className="w-full h-full object-contain select-none"
-            />
-            {resolutionInfo && (
-              <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded backdrop-blur-sm font-mono">
-                {resolutionInfo}
-              </span>
-            )}
-          </>
+          <img
+            src={imageSrc}
+            alt={videoTitle}
+            className="w-full h-full object-contain select-none bg-[#111111]"
+          />
         ) : (
-          <div className="flex flex-col items-center justify-center text-center p-4 text-[#64748B] select-none">
-            <Film className="w-8 h-8 text-[#94A3B8] mb-1.5 stroke-[1.5]" />
-            <p className="text-xs font-medium leading-relaxed">
-              動画プレビュー
-              <br />
-              <span className="text-[11px] text-[#94A3B8]">
-                （現在解析中の動画はありません）
-              </span>
-            </p>
+          <div className="w-full h-full preview-idle-grid border border-black/[0.06] rounded-[6px] flex items-center justify-center select-none">
+            <span className="text-[11px] font-medium text-[#A1A1AA] tracking-wide">
+              {isIdle ? '解析待機中' : 'フレーム読み込み中...'}
+            </span>
           </div>
         )}
       </div>
 
-      {/* Video Name & Destination Info Labels */}
-      <div className="mt-2.5 px-1 text-center">
-        <h2
-          className={`text-sm font-bold truncate transition-colors ${
-            isIdle ? 'text-[#475569]' : 'text-[#1E293B]'
+      {/* 1-Line Compact Metadata Footer */}
+      <div className="flex items-center justify-between gap-3 pt-0.5 min-w-0">
+        <span
+          className={`text-xs font-medium truncate ${
+            isIdle ? 'text-[#71717A]' : 'text-[#111111]'
           }`}
           title={videoTitle}
         >
           {displayTitle}
-        </h2>
-        <p
-          className="text-xs text-[#64748B] mt-0.5 truncate transition-colors"
-          title={metaText}
+        </span>
+        <span
+          className="text-[11px] font-mono text-[#A1A1AA] truncate max-w-[48%]"
+          title={displayMeta}
         >
           {displayMeta}
-        </p>
+        </span>
       </div>
-    </div>
+    </section>
   );
 };

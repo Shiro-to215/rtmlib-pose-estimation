@@ -11,10 +11,10 @@ export const VisualizationTab: React.FC<VisualizationTabProps> = ({
   setFieldValue,
 }) => {
   return (
-    <div className="space-y-4">
-      <div className="border border-[#D4DFDC] rounded-lg p-3.5 bg-white">
-        <h4 className="text-xs font-bold text-[#1E293B] mb-2">描画スタイル・サイズ調整</h4>
-        <div className="grid grid-cols-3 gap-3">
+    <div className="space-y-3">
+      <div className="bg-white rounded-[14px] p-5">
+        <h4 className="text-xs font-semibold text-[#111111] mb-2">描画スタイル・サイズ調整</h4>
+        <div className="grid grid-cols-3 gap-4">
           <SliderWithInput
             label="骨格ライン線幅"
             description="骨格ボーンの描画太さ"

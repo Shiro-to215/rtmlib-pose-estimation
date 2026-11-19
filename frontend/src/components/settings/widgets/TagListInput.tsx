@@ -50,9 +50,9 @@ export const TagListInput: React.FC<TagListInputProps> = ({
   return (
     <div className={`py-2 ${className}`}>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs font-bold text-[#1E293B]">{label}</label>
+        <label className="text-xs font-semibold text-[#111111]">{label}</label>
       </div>
-      {description && <p className="text-[11px] text-[#64748B] mb-1.5">{description}</p>}
+      {description && <p className="text-[11px] text-[#71717A] mb-1.5 leading-snug">{description}</p>}
       <input
         type="text"
         value={text}
@@ -60,9 +60,9 @@ export const TagListInput: React.FC<TagListInputProps> = ({
         onFocus={() => setFocused(true)}
         onBlur={handleBlur}
         placeholder="例: 0 (カンマ区切り)"
-        className="w-full h-9 px-3 text-xs border border-[#CBD5E1] rounded-lg bg-white text-[#1E293B] font-mono focus:border-[#0F766E] focus:outline-none"
+        className="w-full h-9 px-3 text-xs rounded-[6px] bg-[#F4F5F6] border border-black/[0.08] text-[#111111] font-mono placeholder:text-[#A1A1AA] focus:bg-white focus:border-[#111111] focus:outline-none select-text"
       />
-      {error && <p className="text-[11px] text-[#C8332B] mt-1">{error}</p>}
+      {error && <p className="text-[11px] text-[#B91C1C] mt-1">{error}</p>}
     </div>
   );
 };

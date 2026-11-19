@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Trash2, Pause, Play } from 'lucide-react';
+import { Pause, Play, Trash2 } from 'lucide-react';
 import { LogEntry } from '../../types/models';
 
 export interface ExecutionLogBoxProps {
@@ -16,14 +16,12 @@ export const ExecutionLogBox: React.FC<ExecutionLogBoxProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
 
-  // Auto-scroll when new logs arrive, if auto-scroll is enabled
   useEffect(() => {
     if (!autoScroll || !containerRef.current) return;
     const el = containerRef.current;
     el.scrollTop = el.scrollHeight;
   }, [logs, autoScroll]);
 
-  // Handle user manual scroll: pause auto-scroll if user scrolls up
   const handleScroll = () => {
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
@@ -36,51 +34,66 @@ export const ExecutionLogBox: React.FC<ExecutionLogBoxProps> = ({
   const getTagClass = (tag: LogEntry['tag']) => {
     switch (tag) {
       case 'heading':
-        return 'text-[#0B534D] font-bold';
+        return 'text-white font-semibold';
       case 'error':
-        return 'text-[#C8332B] font-medium bg-[#FEF2F2]/50 px-1 rounded';
+        return 'text-[#FCA5A5] bg-[#EF4444]/15 px-1.5 py-0.5 rounded-[4px]';
       case 'system':
-        return 'text-[#64748B] italic';
+        return 'text-[#A1A1AA]';
       default:
-        return 'text-[#1E293B]';
+        return 'text-[#D4D4D8]';
     }
   };
 
   return (
-    <div
-      className={`flex flex-col h-36 bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg overflow-hidden shadow-inner ${className}`}
+    <section
+      className={`flex-1 min-h-0 bg-[#111111] text-white rounded-[14px] p-4 flex flex-col overflow-hidden ${className}`}
     >
       {/* Log Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#F1F5F9] border-b border-[#CBD5E1] text-xs select-none">
-        <span className="font-bold text-[#475569]">実行ログ</span>
+      <div className="flex items-center justify-between pb-2.5 border-b border-white/[0.08] flex-shrink-0 select-none">
         <div className="flex items-center gap-2">
+          <h2 className="text-xs font-medium text-white">実行ログ</h2>
+          {logs.length > 0 && (
+            <span className="text-[11px] font-mono text-[#A1A1AA] tabular-nums">
+              {logs.length}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
           <button
+            type="button"
             onClick={() => setAutoScroll(!autoScroll)}
-            className="flex items-center gap-1 text-[11px] text-[#64748B] hover:text-[#1E293B] transition-colors"
+            className="flex items-center gap-1 text-[11px] text-[#A1A1AA] hover:text-white transition-colors cursor-pointer"
             title={autoScroll ? '自動スクロールを一時停止' : '自動スクロールを再開'}
           >
-            {autoScroll ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+            {autoScroll ? (
+              <Pause className="w-3 h-3" strokeWidth={1.6} />
+            ) : (
+              <Play className="w-3 h-3" strokeWidth={1.6} />
+            )}
             <span>{autoScroll ? '追従中' : '停止中'}</span>
           </button>
+
           <button
+            type="button"
             onClick={onClear}
-            className="flex items-center gap-1 text-[11px] text-[#64748B] hover:text-[#C8332B] transition-colors"
+            className="flex items-center gap-1 text-[11px] text-[#A1A1AA] hover:text-white transition-colors cursor-pointer"
             title="ログをクリア"
           >
-            <Trash2 className="w-3 h-3" />
+            <Trash2 className="w-3 h-3" strokeWidth={1.6} />
             <span>クリア</span>
           </button>
         </div>
       </div>
 
-      {/* Scrollable Monospace Body */}
+      {/* Scrollable Monospace Log Body */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 p-2.5 overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all select-text"
+        className="flex-1 min-h-0 pt-2.5 overflow-y-auto font-mono text-[11.5px] leading-[1.55] whitespace-pre-wrap break-all select-text dark-scrollbar tabular-nums"
       >
         {logs.length === 0 ? (
-          <div className="text-[#94A3B8] italic">[ログはありません]</div>
+          <div className="text-[#A1A1AA]">ログ待機中</div>
         ) : (
           logs.map((log) => (
             <div key={log.id} className={`${getTagClass(log.tag)} py-0.5`}>
@@ -89,6 +102,6 @@ export const ExecutionLogBox: React.FC<ExecutionLogBoxProps> = ({
           ))
         )}
       </div>
-    </div>
+    </section>
   );
 };

@@ -7,6 +7,7 @@ import {
   InitialDataPayload,
   JobSettings,
   LogEntry,
+  PoseEngineType,
   ReservationJob,
   RightViewType,
   SystemInfo,
@@ -25,8 +26,10 @@ import {
   waitForBackendApi,
 } from './api/pywebview';
 import { MainLayout } from './components/layout/MainLayout';
-import { RightWorkspaceShell } from './components/layout/RightWorkspaceShell';
-import { LeftMonitorPane } from './components/left_monitor/LeftMonitorPane';
+import { TopHeader } from './components/layout/TopHeader';
+import { StatusSummaryStrip } from './components/dashboard/StatusSummaryStrip';
+import { VideoPreviewCanvas } from './components/left_monitor/VideoPreviewCanvas';
+import { ExecutionLogBox } from './components/left_monitor/ExecutionLogBox';
 import { QueueListView } from './components/queue/QueueListView';
 import { AddReservationView } from './components/add_reservation/AddReservationView';
 import { SettingsView } from './components/settings/SettingsView';
@@ -73,12 +76,13 @@ export const App: React.FC = () => {
   const [phaseCode, setPhaseCode] = useState<string>('IDLE');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [selectedQueueIds, setSelectedQueueIds] = useState<string[]>([]);
 
   // Colab Remote Execution State
   const [colabConfig, setColabConfig] = useState<ColabConfig>(DEFAULT_COLAB_CONFIG);
   const [isColabModalOpen, setIsColabModalOpen] = useState<boolean>(false);
 
-  // Poll pure in-memory Colab CLI status for top-bar countdown badge (does not extend remote/local idle timer)
+  // Poll pure in-memory Colab CLI status for header badge (does not extend idle timer)
   useEffect(() => {
     const mode = colabConfig.colab_mode || 'cli_ssh';
     if (colabConfig.execution_target !== 'colab' || mode !== 'cli_ssh') {
@@ -107,7 +111,7 @@ export const App: React.FC = () => {
     };
   }, [colabConfig.execution_target, colabConfig.colab_mode, isProcessing]);
 
-  // Right Pane View State
+  // Workspace View State
   const [activeView, setActiveView] = useState<RightViewType>('queue');
   const activeViewRef = useRef<RightViewType>('queue');
   useEffect(() => {
@@ -282,20 +286,24 @@ export const App: React.FC = () => {
     return null;
   }, [queue, activeJobId]);
 
-  // Compute Top Action Bar Banner Text
-  const hasPendingJobs = useMemo(() => {
-    return queue.some((j) => j.state === 'pending');
-  }, [queue]);
+  const inspectedJob = useMemo(() => {
+    if (selectedQueueIds.length !== 1) return null;
+    return queue.find((j) => j.id === selectedQueueIds[0]) || null;
+  }, [queue, selectedQueueIds]);
 
-  const bannerText = useMemo(() => {
-    if (isStopping) {
-      return '解析を中断しています。現在の動画を待機リストの先頭へ戻します…';
-    }
-    if (isProcessing && activeJob) {
-      return `解析実行中: ${activeJob.video_name} (${phaseCode} ${Math.round(progressPercent)}%)`;
-    }
-    return '待機中の予約を上から順番に解析します。';
-  }, [isStopping, isProcessing, activeJob, phaseCode, progressPercent]);
+  const pendingCount = useMemo(
+    () => queue.filter((j) => j.state === 'pending').length,
+    [queue]
+  );
+  const doneCount = useMemo(
+    () => queue.filter((j) => j.state === 'done').length,
+    [queue]
+  );
+  const failedCount = useMemo(
+    () => queue.filter((j) => j.state === 'failed').length,
+    [queue]
+  );
+  const hasPendingJobs = pendingCount > 0;
 
   // Colab Config & Connection Handlers
   const handleChangeExecutionTarget = async (target: ExecutionTarget) => {
@@ -379,7 +387,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Top Bar Actions
+  // Top Header Start / Cancel Actions
   const handleStartAnalysis = async () => {
     const mode = colabConfig.colab_mode || 'cli_ssh';
     if (
@@ -561,21 +569,51 @@ export const App: React.FC = () => {
     }
   };
 
-  // Left Pane Component (Always Visible, 25% Width)
-  const leftPane = (
-    <LeftMonitorPane
-      activeJob={activeJob}
-      progressPercent={progressPercent}
-      phaseCode={phaseCode}
+  const handleSelectDefaultPoseEngine = async (nextEngine: PoseEngineType) => {
+    const currentEngine =
+      String(defaultSettings.POSE_ENGINE || 'rtmpose').toLowerCase() === 'vitpose'
+        ? 'vitpose'
+        : 'rtmpose';
+    if (nextEngine === currentEngine) return;
+    await handleSaveDefaultSettings(
+      { ...defaultSettings, POSE_ENGINE: nextEngine },
+      systemInfo.output_root || ''
+    );
+  };
+
+  const headerNode = (
+    <TopHeader
+      activeView={activeView}
       isProcessing={isProcessing}
       isStopping={isStopping}
-      logs={logs}
-      onClearLogs={() => setLogs([])}
+      hasPendingJobs={hasPendingJobs}
+      executionTarget={colabConfig.execution_target}
+      colabConfig={colabConfig}
+      onNavigateQueue={() => setActiveView('queue')}
+      onNavigateAdd={() => handleOpenAddReservation()}
+      onNavigateBasicSettings={handleOpenBasicSettings}
+      onChangeExecutionTarget={handleChangeExecutionTarget}
+      onOpenColabModal={() => setIsColabModalOpen(true)}
+      onStopColabCli={handleStopColabCli}
+      onStart={handleStartAnalysis}
+      onCancel={handleCancelAnalysis}
     />
   );
 
-  // Right Pane Switchable View Content (75% Width)
-  const renderRightViewContent = () => {
+  const bannerNode = bannerError ? (
+    <div className="px-4 py-2 bg-[#FEE2E2] border border-black/[0.06] rounded-[10px] flex items-center justify-between text-xs text-[#B91C1C] flex-shrink-0">
+      <span>{bannerError}</span>
+      <button
+        type="button"
+        onClick={() => setBannerError(null)}
+        className="ml-3 font-semibold text-[#B91C1C] hover:underline cursor-pointer"
+      >
+        閉じる
+      </button>
+    </div>
+  ) : null;
+
+  const renderSubView = () => {
     switch (activeView) {
       case 'add':
         return (
@@ -612,56 +650,70 @@ export const App: React.FC = () => {
             onSaveJob={handleSaveJobSettings}
           />
         );
-      case 'queue':
       default:
-        return (
-          <QueueListView
-            jobs={queue}
-            onOpenAddReservation={handleOpenAddReservation}
-            onOpenBasicSettings={handleOpenBasicSettings}
-            onOpenJobSettings={handleOpenJobSettings}
-            onDeleteJobs={handleDeleteJobs}
-            onMoveJob={handleMoveJob}
-            onReorderJob={handleReorderJob}
-            onRetryJob={handleRetryJob}
-          />
-        );
+        return null;
     }
   };
 
-  // Right Workspace Shell wrapping TopActionBar and Active Workspace View
-  const rightPane = (
-    <RightWorkspaceShell
-      isProcessing={isProcessing}
-      isStopping={isStopping}
-      hasPendingJobs={hasPendingJobs}
-      bannerText={bannerText}
-      executionTarget={colabConfig.execution_target}
-      colabConfig={colabConfig}
-      onChangeExecutionTarget={handleChangeExecutionTarget}
-      onOpenColabModal={() => setIsColabModalOpen(true)}
-      onStopColabCli={handleStopColabCli}
-      onStart={handleStartAnalysis}
-      onCancel={handleCancelAnalysis}
-    >
-      {bannerError && (
-        <div className="mx-3 mt-2 px-3 py-2 bg-[#FEF2F2] border border-[#F5C2C0] rounded-lg flex items-center justify-between text-xs text-[#C8332B] flex-shrink-0">
-          <span>{bannerError}</span>
-          <button
-            onClick={() => setBannerError(null)}
-            className="ml-3 font-bold hover:underline cursor-pointer"
-          >
-            閉じる
-          </button>
-        </div>
-      )}
-      {renderRightViewContent()}
-    </RightWorkspaceShell>
-  );
-
   return (
     <>
-      <MainLayout leftPane={leftPane} rightPane={rightPane} />
+      <MainLayout header={headerNode} banner={bannerNode}>
+        <div
+          key={activeView}
+          className="flex-1 min-h-0 flex flex-col overflow-hidden view-fade-in"
+        >
+          {activeView === 'queue' ? (
+            <div className="flex-1 min-h-0 grid grid-cols-12 gap-3">
+              {/* Left Pane (8 cols): Compact Status/Progress Strip + Scrollable Queue Card */}
+              <div className="col-span-8 min-h-0 flex flex-col gap-3">
+                <StatusSummaryStrip
+                  pendingCount={pendingCount}
+                  doneCount={doneCount}
+                  failedCount={failedCount}
+                  isProcessing={isProcessing}
+                  isStopping={isStopping}
+                  progressPercent={progressPercent}
+                  phaseCode={phaseCode}
+                  activeJob={activeJob}
+                  inspectedJob={inspectedJob}
+                  defaultSettings={defaultSettings}
+                  onTogglePoseEngine={handleSelectDefaultPoseEngine}
+                  onOpenJobSettings={handleOpenJobSettings}
+                />
+
+                <section className="flex-1 min-h-0 bg-white rounded-[14px] flex flex-col overflow-hidden">
+                  <QueueListView
+                    jobs={queue}
+                    onOpenAddReservation={handleOpenAddReservation}
+                    onOpenJobSettings={handleOpenJobSettings}
+                    onDeleteJobs={handleDeleteJobs}
+                    onMoveJob={handleMoveJob}
+                    onReorderJob={handleReorderJob}
+                    onRetryJob={handleRetryJob}
+                    onSelectionChange={setSelectedQueueIds}
+                  />
+                </section>
+              </div>
+
+              {/* Right Pane (4 cols): 16:9 Live Preview Card + Dark #111111 Execution Log Card */}
+              <div className="col-span-4 min-h-0 flex flex-col gap-3">
+                <VideoPreviewCanvas
+                  imageSrc={activeJob?.thumbnail}
+                  videoTitle={activeJob?.video_name}
+                  metaText={activeJob ? `出力: ${activeJob.output_folder}` : ''}
+                  resolutionInfo={activeJob?.thumbnail_info}
+                  isIdle={!isProcessing || !activeJob}
+                />
+
+                <ExecutionLogBox logs={logs} onClear={() => setLogs([])} />
+              </div>
+            </div>
+          ) : (
+            renderSubView()
+          )}
+        </div>
+      </MainLayout>
+
       <ColabConnectionModal
         isOpen={isColabModalOpen}
         config={colabConfig}

@@ -44,19 +44,14 @@ export const DashedAddZone: React.FC<DashedAddZoneProps> = ({ onClick, onDropVid
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`h-20 rounded-xl border-2 border-dashed transition-all flex flex-col items-center justify-center cursor-pointer select-none my-2 px-4 flex-shrink-0 ${
+      className={`h-9 mx-4 mb-3 mt-1 rounded-[6px] border border-dashed transition-colors flex items-center justify-center gap-1.5 cursor-pointer select-none text-xs font-medium flex-shrink-0 ${
         isDragOver
-          ? 'border-[#0F766E] bg-[#E4F3F0] text-[#0B534D]'
-          : 'border-[#8DA49E] hover:border-[#0F766E] bg-[#F9FBFA] hover:bg-[#E4F3F0] text-[#1E293B]'
+          ? 'border-[#111111] bg-[#E3E5E8] text-[#111111]'
+          : 'border-black/[0.12] hover:border-[#111111] bg-[#F4F5F6]/50 hover:bg-[#F4F5F6] text-[#71717A] hover:text-[#111111]'
       }`}
     >
-      <div className="flex items-center gap-1.5 font-bold text-sm">
-        <Plus className="w-4 h-4 text-[#0F766E]" />
-        <span>予約を追加</span>
-      </div>
-      <span className="text-[11px] text-[#64748B] mt-0.5">
-        クリックして動画と出力先を指定（または動画ファイルをここへドロップ）
-      </span>
+      <Plus className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={1.6} />
+      <span>動画ファイルをドロップ、またはクリックして予約を追加</span>
     </div>
   );
 };

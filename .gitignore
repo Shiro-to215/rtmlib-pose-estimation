@@ -19,5 +19,6 @@ tools/
 frontend/node_modules/
 
 .agents
+skills-lock.json
 TEST_READY.md
 .colab_config.json

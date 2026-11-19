@@ -2,26 +2,122 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Custom desktop scrollbars */
+:root {
+  color-scheme: light;
+  --bg-canvas: #ECEEEF;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #F4F5F6;
+  --ink-primary: #111111;
+  --ink-secondary: #71717A;
+  --ink-muted: #A1A1AA;
+  --border-hairline: rgba(0, 0, 0, 0.06);
+  --log-bg: #111111;
+  --log-border: rgba(255, 255, 255, 0.08);
+  --radius-card: 14px;
+  --radius-control: 6px;
+  --radius-pill: 9999px;
+}
+
+/* Thin monochrome scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #F1F5F9;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
-  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+/* Dark scrollbar for the #111111 Execution Log card */
+.dark-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+}
+
+.dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.34);
 }
 
 .no-select {
   user-select: none;
   -webkit-user-select: none;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quiet CSS hairline grid for idle video preview viewport */
+.preview-idle-grid {
+  background-color: #F4F5F6;
+  background-image:
+    linear-gradient(to right, rgba(0, 0, 0, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.035) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+}
+
+/* Monochrome range slider (shared by Settings widgets) */
+input[type="range"].studio-range {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #E4E6E8;
+  height: 5px;
+  border-radius: 9999px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  outline: none;
+}
+
+input[type="range"].studio-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #111111;
+  border: 2px solid #FFFFFF;
+  cursor: pointer;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+input[type="range"].studio-range::-webkit-slider-thumb:hover {
+  background: #27272A;
+  transform: scale(1.08);
+}
+
+input[type="range"].studio-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid #111111;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes viewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.view-fade-in {
+  animation: viewFadeIn 150ms ease-out;
 }

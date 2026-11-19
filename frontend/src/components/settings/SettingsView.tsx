@@ -102,7 +102,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSecondaryAction = () => {
     if (mode === 'default') {
-      // Restore hardcoded engine defaults
       resetToDefaults({
         DEVICE: 'auto',
         CAPTURE_FPS: null,
@@ -138,7 +137,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         LABEL_FONT_SCALE: 1.0,
       });
     } else {
-      // Reflect only analysis parameters from global defaults; preserve job input video & destination (Plan A)
       resetToDefaults(extractEngineParams(defaultSettings));
     }
   };
@@ -159,54 +157,61 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  // Title text
-  const titleText =
-    mode === 'default'
-      ? '基本設定（全体の初期値）'
-      : `個別設定 — ${job?.video_name || ''}`;
-
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-white select-none">
-      {/* Header Bar */}
-      <div className="h-14 px-5 border-b border-[#D4DFDC] flex items-center justify-between bg-[#F8FAFA] flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#1E293B] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            <span>戻る</span>
-          </button>
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-bold text-[#1E293B] truncate max-w-md">{titleText}</h2>
-            { (isDirty || hasIoPathChanges) && (
-              <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                ● 未保存の変更あり
-              </span>
-            )}
-          </div>
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden select-none">
+      {/* Top Header Strip directly on #ECEEEF */}
+      <div className="pb-3 flex items-center justify-between gap-3 flex-shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          {mode === 'job' ? (
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={handleBack}
+                className="inline-flex items-center gap-1 text-xs font-medium text-[#71717A] hover:text-[#111111] transition-colors cursor-pointer flex-shrink-0"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" strokeWidth={1.6} />
+                <span>予約リスト</span>
+              </button>
+              <span className="text-xs text-[#A1A1AA]">/</span>
+              <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-[#111111] truncate max-w-md">
+                個別設定 — {job?.video_name || ''}
+              </h2>
+            </div>
+          ) : (
+            <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-[#111111]">
+              基本設定（全体の初期値）
+            </h2>
+          )}
+
+          {(isDirty || hasIoPathChanges) && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#111111] bg-white border border-black/[0.08] px-2.5 py-0.5 rounded-[6px] flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#111111]" />
+              <span>未保存の変更あり</span>
+            </span>
+          )}
         </div>
 
-        {/* Action Button Group */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
+            type="button"
             onClick={handleSecondaryAction}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-[#B2C4BE] text-[#475569] hover:bg-[#EBF0EE] bg-white transition-colors cursor-pointer"
+            className="h-8 px-3 rounded-[6px] bg-white border border-black/[0.08] hover:bg-[#F4F5F6] text-xs font-medium text-[#111111] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
+            <RotateCcw className="w-3.5 h-3.5 text-[#71717A]" strokeWidth={1.6} />
             <span>{mode === 'default' ? '初期値に戻す' : '基本設定を反映'}</span>
           </button>
 
           <button
+            type="button"
             onClick={handleSave}
             disabled={!canSave}
-            className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${
+            className={`h-8 px-4 rounded-[6px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
               canSave
-                ? 'bg-[#0F766E] hover:bg-[#115E59] text-white shadow-sm cursor-pointer'
-                : 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed shadow-none'
+                ? 'bg-[#111111] hover:bg-[#27272A] text-white cursor-pointer'
+                : 'bg-[#D9DCE0] text-[#8E8E98] cursor-not-allowed'
             }`}
           >
-            <Save className="w-3.5 h-3.5" />
+            <Save className="w-3.5 h-3.5" strokeWidth={1.6} />
             <span>
               {isSaving
                 ? '保存中...'
@@ -218,9 +223,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto p-5 flex flex-col">
-        {/* Top I/O Card */}
+      {/* Monochrome Underline Sub-Tab Navigation */}
+      <div className="flex items-center gap-6 border-b border-black/[0.08] flex-shrink-0">
+        <button
+          type="button"
+          onClick={() => setActiveTab('general')}
+          className={`pb-2.5 text-xs border-b-2 -mb-px transition-colors cursor-pointer inline-flex items-center gap-1.5 ${
+            activeTab === 'general'
+              ? 'border-[#111111] text-[#111111] font-semibold'
+              : 'border-transparent text-[#71717A] hover:text-[#111111] font-medium'
+          }`}
+        >
+          <span>基本・出力設定</span>
+          {rtmlibWarning && <span className="w-1.5 h-1.5 rounded-full bg-[#B91C1C]" />}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('tracking')}
+          className={`pb-2.5 text-xs border-b-2 -mb-px transition-colors cursor-pointer ${
+            activeTab === 'tracking'
+              ? 'border-[#111111] text-[#111111] font-semibold'
+              : 'border-transparent text-[#71717A] hover:text-[#111111] font-medium'
+          }`}
+        >
+          トラッキング・重み設定
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('visualization')}
+          className={`pb-2.5 text-xs border-b-2 -mb-px transition-colors cursor-pointer ${
+            activeTab === 'visualization'
+              ? 'border-[#111111] text-[#111111] font-semibold'
+              : 'border-transparent text-[#71717A] hover:text-[#111111] font-medium'
+          }`}
+        >
+          可視化・オーバーレイ設定
+        </button>
+      </div>
+
+      {/* Scrollable Bento Cards Area */}
+      <div className="flex-1 min-h-0 overflow-y-auto pt-3 pr-1 pb-2 space-y-3">
         {mode === 'default' ? (
           <DefaultIoCard
             defaultRoot={defaultRoot}
@@ -238,45 +282,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )
         )}
 
-        {/* 3-Tab Navigation */}
-        <div className="flex border-b border-[#CBD5E1] mb-4 flex-shrink-0">
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'general'
-                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            基本・出力設定
-            {rtmlibWarning && (
-              <span className="ml-1.5 w-2 h-2 inline-block rounded-full bg-[#C8332B]" />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('tracking')}
-            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'tracking'
-                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            トラッキング・重み設定
-          </button>
-          <button
-            onClick={() => setActiveTab('visualization')}
-            className={`px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'visualization'
-                ? 'border-[#0F766E] text-[#0F766E] bg-[#E4F3F0]/30'
-                : 'border-transparent text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            可視化・オーバーレイ設定
-          </button>
-        </div>
-
-        {/* Tab Body */}
-        <div className="flex-1 pb-4">
+        <div key={activeTab} className="view-fade-in">
           {activeTab === 'general' && (
             <GeneralOutputTab
               values={values}
